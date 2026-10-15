@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 密钥和本地配置，绝不上传
+.env
+
+# 数据文件（太大，不进 Git）
+data/
+*.parquet
+
+# 编辑器
+.vscode/
