@@ -98,6 +98,7 @@ def select_markets(markets, top_n=TOP_N, min_days_left=MIN_DAYS_LEFT, now=None):
             continue
         candidates.append({
             "market_id": str(m["id"]),
+            "condition_id": m["conditionId"],   # CLOB 里的市场 ID，WebSocket 消息的 market 字段就是它
             "question": m.get("question"),
             "volume24hr": float(m.get("volume24hr") or 0),  # 没有这个字段 = 24 小时没成交
             "end_date": m["endDate"],
