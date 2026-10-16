@@ -34,6 +34,7 @@ docker compose up -d                     # 启动 Kafka + Kafka UI
 pip install -r requirements.txt
 python scripts/create_topics.py          # 创建 topic
 python scripts/fetch_markets.py          # 从 Gamma API 拉开放市场写入 pm.raw.markets
+python scripts/select_markets.py         # 从 pm.raw.markets 筛出订阅名单并打印（只读 Kafka）
 ```
 
 目前没有测试、lint 或构建配置。
@@ -62,5 +63,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - 阶段 1 进行中：
   - 已完成：建好 3 个 topic；scripts/fetch_markets.py 拉取 tech(1401)/ai(439) 标签的开放市场，去重后 2922 个写入 pm.raw.markets（同一市场可能同时带两个标签，按市场 id 去重并合并 tag_slugs）。
   - 市场数据中有用的字段：volume24hr、liquidityNum、acceptingOrders、enableOrderBook、clobTokenIds、events[0].id、feeSchedule（taker 费率，模拟盘要用）、orderPriceMinTickSize、orderMinSize、version。
-  - 下一步：筛选订阅名单（acceptingOrders=true 且 enableOrderBook=true，按 volume24hr 降序取前 30 个，每个市场取 Yes/No 两个 token）→ WebSocket 采集订单簿和成交写入 pm.raw.clob（带断线重连和心跳，重连后重新拿快照并记录缺口）→ 采集评论。
+  - 已完成：scripts/select_markets.py 筛选订阅名单——acceptingOrders=true 且 enableOrderBook=true、endDate 距今至少 MIN_DAYS_LEFT(2) 天（已过期和无 endDate 的排除），按 volume24hr 降序取前 30 个；按 version 取两个 token（v1 解析 clobTokenIds 的 JSON 字符串，v2 用 positionIds），下标 0/1 对应 outcomes[0]/[1]。非 Yes/No 的二选一市场（如 Anthropic/OpenAI）和系列题都保留。目前数据全是 v1，v2 分支未经真实数据验证。
+    已过期的市场 acceptingOrders 仍可能是 true（等待结算），所以必须单独按 endDate 过滤。
+  - 下一步：WebSocket 采集订单簿和成交写入 pm.raw.clob（带断线重连和心跳，重连后重新拿快照并记录缺口）→ 采集评论。
   - 验收标准：连续运行 24 小时无人工干预；每条消息带本地接收时间。
+
+## 以后的想法（暂不做）
+- negRisk 套利候选：订阅整个 negRisk 事件的全部选项（如「谁有最好的 AI 模型」各家公司），检查各选项 Yes 价格之和是否偏离 1。偏离（扣除手续费后）可作为套利策略的候选，留到阶段 4 模拟交易时考虑。
