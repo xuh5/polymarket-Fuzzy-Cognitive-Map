@@ -68,5 +68,18 @@ services:
     command: python scripts/collect_clob.py
     logging: *logging
 
+  # 每 10 分钟轮询一次评论接口，新增或有变化的评论写 pm.raw.comments
+  collect-comments:
+    build: .
+    image: polymarket-app
+    container_name: collect-comments
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+    command: python scripts/collect_comments.py --every 600
+    logging: *logging
+
 volumes:
   kafka-data:
