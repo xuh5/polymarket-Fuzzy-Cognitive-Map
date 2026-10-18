@@ -36,6 +36,7 @@ python scripts/create_topics.py          # 创建 topic
 python scripts/fetch_markets.py          # 从 Gamma API 拉开放市场写入 pm.raw.markets；加 --every 3600 就每小时拉一次一直跑
 python scripts/select_markets.py         # 从 pm.raw.markets 筛出订阅名单并打印（只读 Kafka）
 python scripts/collect_clob.py --duration 300   # WebSocket 采集订单簿/成交写入 pm.raw.clob；不加 --duration 就一直跑；--refresh-every 默认 3600 秒
+python scripts/check_clob.py --hours 24  # 数据质量检查（只读）：断线/缺口、每小时消息量、重复、缺 received_at、吞吐量
 ```
 
 目前没有测试、lint 或构建配置。
@@ -95,7 +96,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成：订阅名单自动刷新，两个程序通过 Kafka 解耦——fetch_markets.py `--every 3600` 定时拉 Gamma 写 pm.raw.markets（含 tombstone）；collect_clob.py 每 `--refresh-every` 秒重读 pm.raw.markets 重新筛名单，新旧对比后在同一连接上发 `{"assets_ids": [...], "operation": "subscribe"|"unsubscribe"}`。读 Kafka 失败或新名单为空时沿用旧名单。拉市场的程序挂了不影响采集，只是名单不再更新。
     实测动态 subscribe 后服务器同样立即推送新 token 的 book 快照。
   - 已完成：两个程序放进 Docker。24 小时验收从 2026-10-18 18:27 UTC 开始（collect-clob 首个 conn_id=8f673cdfa78a）。
-  - 下一步：24 小时后写检查脚本统计断线次数、缺口总时长、每小时消息量 → 采集评论。
+  - 已完成：scripts/check_clob.py。用 `offsets_for_times` 按时间定位到起点再读，不从头扫；断线次数按 conn_id 对缺口标记去重统计。
+  - 下一步：2026-10-19 18:27 UTC 后跑 `check_clob.py --hours 24` 出验收结论；同时开发评论采集器。
   - 验收标准：连续运行 24 小时无人工干预；每条消息带本地接收时间。
 
 ## 以后的想法（暂不做）
