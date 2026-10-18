@@ -33,9 +33,9 @@ docker compose up -d                     # 启动 Kafka + Kafka UI
 .venv\Scripts\activate                   # 激活虚拟环境
 pip install -r requirements.txt
 python scripts/create_topics.py          # 创建 topic
-python scripts/fetch_markets.py          # 从 Gamma API 拉开放市场写入 pm.raw.markets
+python scripts/fetch_markets.py          # 从 Gamma API 拉开放市场写入 pm.raw.markets；加 --every 3600 就每小时拉一次一直跑
 python scripts/select_markets.py         # 从 pm.raw.markets 筛出订阅名单并打印（只读 Kafka）
-python scripts/collect_clob.py --duration 300   # WebSocket 采集订单簿/成交写入 pm.raw.clob；不加 --duration 就一直跑
+python scripts/collect_clob.py --duration 300   # WebSocket 采集订单簿/成交写入 pm.raw.clob；不加 --duration 就一直跑；--refresh-every 默认 3600 秒
 ```
 
 目前没有测试、lint 或构建配置。
@@ -55,6 +55,8 @@ python scripts/collect_clob.py --duration 300   # WebSocket 采集订单簿/成�
 | pm.raw.clob | 市场 id（conditionId，即 WS 消息的 `market` 字段） | 3 | 保留 7 天；订单簿快照、变化、成交放在同一个 topic，以保证顺序 |
 | pm.raw.comments | 事件 id | 3 | 保留 7 天 |
 
+pm.raw.markets 的 tombstone：fetch_markets 每轮对比上一轮，从开放列表里消失的市场（已关闭）写一条 value 为空的消息，compact 后这个 key 就被删掉；`load_latest_markets()` 读到空 value 会把该市场从结果里去掉。保护：本轮拉取有任何报错就整轮作废、不写；一轮消失超过 20%（MAX_GONE_RATIO）视为 API 异常，不写 tombstone。实测 3 天后首次刷新写了 66 条，逐个查 Gamma 全部 closed=true，其中有 endDate 在 11 月但提前关闭的——光靠 endDate 过滤挡不住这种。
+
 pm.raw.clob 的 key 用市场 ID 而不是 token ID：实测一条 `price_change` 几乎总是同时包含同一市场 Yes/No 两个 token 的变化。按 token 做 key 要么得拆消息（违反原样入库），要么另一个 token 的顺序得不到保证；按市场做 key，同一市场的所有事件落在同一分区、严格有序。
 
 消息格式：信封 `{source, received_at(UTC ISO 毫秒), ..., payload: 原始数据，一个字都不改}`。原样入库是回放回测和数据追溯的前提，转换和清洗放在下游消费者里做。
@@ -64,7 +66,8 @@ pm.raw.clob 的信封额外字段：`conn_id`（每次 WebSocket 连接一个随
   `new_market` 不写 Kafka、只计数：它推的是全平台所有新市场（实测 5 分钟 560 条，几乎全是体育盘口，占消息量约 10%），而新市场信息随时能从 Gamma API 拉回来，丢掉不会造成不可挽回的损失。
   key 一律是市场 ID：优先用事件里的 `market`，没有就用订阅名单把 `asset_id` 换算成市场 ID；都拿不到时计数（`无法确定市场`）并打印警告，key 为 null，消息照样写入。
 - `clob_rest`：重连后 10 秒内没收到 book 快照时，用 `POST https://clob.polymarket.com/books` 补拉的快照（结构同 book，但没有 event_type）
-- `collector`：采集器自己写的缺口标记 `{event_type: "gap", market, disconnected_at, reconnected_at, reason}`，每次连接成功后给每个订阅市场各写一条；`disconnected_at` 为 null 表示采集器刚启动。下游读到它就应作废该市场的订单簿状态，等下一个快照。
+- `collector`：采集器自己写的缺口标记 `{event_type: "gap", market, disconnected_at, reconnected_at, reason}`，每次连接成功后给每个订阅市场各写一条；`disconnected_at` 为 null 表示采集器刚启动或该市场刚加入订阅名单（reason 区分）。下游读到它就应作废该市场的订单簿状态，等下一个快照。
+  名单刷新时被移出的市场写 `{event_type: "unsubscribed", market, at, reason}`，表示之后没数据是正常停止。实测退订后约 0.2 秒内还会到几条在途消息，下游要容忍。
 
 Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 429/5xx 时按指数退避重试。
 
@@ -77,7 +80,9 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     已过期的市场 acceptingOrders 仍可能是 true（等待结算），所以必须单独按 endDate 过滤。
   - 已完成（第一版）：scripts/collect_clob.py。启动时筛一次名单，运行期间不变；每 10 秒发文本 `PING`，30 秒无消息即重连，重连等待 1→2→4…最多 60 秒。
     WebSocket 实测：订阅后服务器立即推送所有 token 的 book 快照（一帧 JSON 数组），所以重连后重新订阅就能拿到新快照；文档没写这一点。
-  - 下一步：订阅名单每小时刷新（动态 subscribe/unsubscribe）→ 放进 Docker 跑满 24 小时 → 采集评论。
+  - 已完成：订阅名单自动刷新，两个程序通过 Kafka 解耦——fetch_markets.py `--every 3600` 定时拉 Gamma 写 pm.raw.markets（含 tombstone）；collect_clob.py 每 `--refresh-every` 秒重读 pm.raw.markets 重新筛名单，新旧对比后在同一连接上发 `{"assets_ids": [...], "operation": "subscribe"|"unsubscribe"}`。读 Kafka 失败或新名单为空时沿用旧名单。拉市场的程序挂了不影响采集，只是名单不再更新。
+    实测动态 subscribe 后服务器同样立即推送新 token 的 book 快照。
+  - 下一步：两个程序放进 Docker 跑满 24 小时 → 采集评论。
   - 验收标准：连续运行 24 小时无人工干预；每条消息带本地接收时间。
 
 ## 以后的想法（暂不做）

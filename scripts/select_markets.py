@@ -40,7 +40,11 @@ def load_latest_markets():
             raise TimeoutError(f"读取超时，还没读完的分区：{sorted(remaining)}")
         if msg.error():
             raise RuntimeError(msg.error())
-        latest[msg.key().decode()] = json.loads(msg.value())["payload"]
+        key = msg.key().decode()
+        if msg.value() is None:
+            latest.pop(key, None)   # tombstone：这个市场已经关闭，从名录里删掉
+        else:
+            latest[key] = json.loads(msg.value())["payload"]
         if msg.offset() + 1 >= remaining.get(msg.partition(), 0):
             remaining.pop(msg.partition(), None)
 
