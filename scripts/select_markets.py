@@ -1,11 +1,12 @@
 """从 pm.raw.markets 读出所有市场，筛出要订阅的前 N 个市场和它们的 token。"""
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
 from confluent_kafka import Consumer, TopicPartition
 
-BOOTSTRAP = "localhost:9092"
+BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
 TOPIC = "pm.raw.markets"
 TOP_N = 30
 MIN_DAYS_LEFT = 2   # 离到期不足这么多天的市场不订阅

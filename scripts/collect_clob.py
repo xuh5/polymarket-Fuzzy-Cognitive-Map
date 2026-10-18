@@ -6,6 +6,7 @@
 import argparse
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections import Counter
@@ -19,7 +20,7 @@ from select_markets import load_latest_markets, select_markets
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 REST_BOOKS_URL = "https://clob.polymarket.com/books"
-BOOTSTRAP = "localhost:9092"
+BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
 TOPIC = "pm.raw.clob"
 
 PING_EVERY = 10        # 官方要求每 10 秒发一次 PING

@@ -38,5 +38,35 @@ services:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
 
+  # 每小时从 Gamma API 拉一次市场，写 pm.raw.markets（含已关闭市场的 tombstone）
+  fetch-markets:
+    build: .
+    image: polymarket-app
+    container_name: fetch-markets
+    restart: unless-stopped          # 崩溃、Docker 重启后自动拉起
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092   # 容器之间走内部地址
+    command: python scripts/fetch_markets.py --every 3600
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"              # 日志文件最大 10MB，最多留 5 个，防止日志把硬盘写满
+        max-file: "5"
+
+  # 一直运行：WebSocket 采集订单簿/成交写 pm.raw.clob，每小时重新筛一次订阅名单
+  collect-clob:
+    build: .
+    image: polymarket-app            # 和 fetch-markets 共用同一个镜像（第二次构建直接命中缓存）
+    container_name: collect-clob
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+    command: python scripts/collect_clob.py
+    logging: *logging
+
 volumes:
   kafka-data:

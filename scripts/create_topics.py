@@ -1,7 +1,9 @@
 """创建项目需要的 Kafka topic。可以重复运行：已存在的会跳过。"""
+import os
+
 from confluent_kafka.admin import AdminClient, NewTopic
 
-BOOTSTRAP = "localhost:9092"
+BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
 SEVEN_DAYS_MS = str(7 * 24 * 60 * 60 * 1000)
 
 # (topic 名, 分区数, 额外配置)

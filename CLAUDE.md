@@ -40,6 +40,18 @@ python scripts/collect_clob.py --duration 300   # WebSocket 采集订单簿/成�
 
 目前没有测试、lint 或构建配置。
 
+采集程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，compose 里的 `fetch-markets` 和 `collect-clob` 两个服务共用它，`restart: unless-stopped`）：
+
+```bash
+docker compose up -d                       # 启动全部服务
+docker logs -f collect-clob                # 看采集器日志（每分钟一行统计）
+docker logs -f fetch-markets               # 看拉市场日志（每小时一轮）
+docker compose build                       # 改了代码后重新构建（基础镜像已在本地，SSH 下应该也能跑；加 --pull 或换基础镜像则需用户本地执行）
+docker compose up -d                       # 构建后再 up，会用新镜像重建容器
+```
+
+脚本的 Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`，默认 `localhost:9092`（宿主机直接跑）；容器里设为 `kafka:19092`。在宿主机手动跑 collect_clob.py 测试时注意：容器里的采集器也在写同一个 topic。
+
 ## Kafka（docker-compose.yml）
 - confluentinc/cp-kafka:7.9.0，单节点 KRaft，已关闭自动建 topic（`KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`）：写入不存在的 topic 会超时报错，新 topic 必须先在 create_topics.py 里建。
 - 宿主机程序连 localhost:9092；Docker 内部服务连 kafka:19092。
@@ -82,7 +94,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     WebSocket 实测：订阅后服务器立即推送所有 token 的 book 快照（一帧 JSON 数组），所以重连后重新订阅就能拿到新快照；文档没写这一点。
   - 已完成：订阅名单自动刷新，两个程序通过 Kafka 解耦——fetch_markets.py `--every 3600` 定时拉 Gamma 写 pm.raw.markets（含 tombstone）；collect_clob.py 每 `--refresh-every` 秒重读 pm.raw.markets 重新筛名单，新旧对比后在同一连接上发 `{"assets_ids": [...], "operation": "subscribe"|"unsubscribe"}`。读 Kafka 失败或新名单为空时沿用旧名单。拉市场的程序挂了不影响采集，只是名单不再更新。
     实测动态 subscribe 后服务器同样立即推送新 token 的 book 快照。
-  - 下一步：两个程序放进 Docker 跑满 24 小时 → 采集评论。
+  - 已完成：两个程序放进 Docker。24 小时验收从 2026-10-18 18:27 UTC 开始（collect-clob 首个 conn_id=8f673cdfa78a）。
+  - 下一步：24 小时后写检查脚本统计断线次数、缺口总时长、每小时消息量 → 采集评论。
   - 验收标准：连续运行 24 小时无人工干预；每条消息带本地接收时间。
 
 ## 以后的想法（暂不做）

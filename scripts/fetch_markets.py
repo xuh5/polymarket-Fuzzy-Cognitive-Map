@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -14,7 +15,7 @@ from confluent_kafka import Producer
 from select_markets import load_latest_markets
 
 GAMMA = "https://gamma-api.polymarket.com"
-BOOTSTRAP = "localhost:9092"
+BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
 TOPIC = "pm.raw.markets"
 TAG_SLUGS = ["tech", "ai"]   # 要抓的分类标签
 PAGE_SIZE = 100
