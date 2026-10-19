@@ -6,22 +6,19 @@
 import argparse
 import asyncio
 import json
-import os
 import time
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
 
 import requests
 import websockets
-from confluent_kafka import Producer
 
-from select_markets import load_latest_markets, select_markets
+from pmdata.common.config import CLOB_REST_URL, CLOB_WS_URL, TOPIC_CLOB
+from pmdata.common.kafka import envelope, make_producer
+from pmdata.common.timeutil import now_iso
+from pmdata.ingest.select_markets import load_latest_markets, select_markets
 
-WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-REST_BOOKS_URL = "https://clob.polymarket.com/books"
-BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
-TOPIC = "pm.raw.clob"
+REST_BOOKS_URL = f"{CLOB_REST_URL}/books"
 
 PING_EVERY = 10        # 官方要求每 10 秒发一次 PING
 SILENCE_TIMEOUT = 30   # 这么久什么都没收到，就当连接已经死了
@@ -30,10 +27,6 @@ BACKOFF_MAX = 60       # 重连等待最长 60 秒
 REST_BATCH = 500       # POST /books 一次最多 500 个
 STATS_EVERY = 60       # 每分钟打印一次统计
 REFRESH_EVERY = 3600   # 默认每小时重新筛一次订阅名单
-
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def to_asset_map(selected):
@@ -45,13 +38,10 @@ class Collector:
     def __init__(self, selected):
         # Kafka key 用市场 ID：一条 price_change 里经常同时有 Yes/No 两个 token，按市场分区才能保证同一市场的顺序
         self.subscribed = to_asset_map(selected)        # 当前订阅的 token → 市场
-        self.asset_to_market = dict(self.subscribed)    # 见过的所有 token → 市场，只增不减（退订后迟到的消息也能换算 key）
+        # 见过的所有 token → 市场，只增不减（退订后迟到的消息也能换算 key）
+        self.asset_to_market = dict(self.subscribed)
         self.questions = {s["condition_id"]: s["question"] for s in selected}
-        self.producer = Producer({
-            "bootstrap.servers": BOOTSTRAP,
-            "enable.idempotence": True,
-            "compression.type": "lz4",
-        })
+        self.producer = make_producer()
         self.http = requests.Session()
         self.stats = Counter()
         self.ws = None                # 当前连接；没连上时为 None
@@ -74,15 +64,9 @@ class Collector:
             print(f"写入 Kafka 失败：{err}")
 
     def send(self, key, source, payload, received_at, seq, frame_index):
-        envelope = {
-            "source": source,
-            "received_at": received_at,
-            "conn_id": self.conn_id,
-            "seq": seq,
-            "frame_index": frame_index,
-            "payload": payload,          # 交易所给的原始数据，一个字都不改
-        }
-        self.producer.produce(TOPIC, key=key, value=json.dumps(envelope), on_delivery=self.on_delivery)
+        # payload 是交易所给的原始数据，一个字都不改
+        value = envelope(source, received_at, payload, conn_id=self.conn_id, seq=seq, frame_index=frame_index)
+        self.producer.produce(TOPIC_CLOB, key=key, value=value, on_delivery=self.on_delivery)
         self.producer.poll(0)
 
     def write_gap_markers(self, markets, disconnected_at, reason):
@@ -267,10 +251,10 @@ class Collector:
         while True:
             try:
                 # 关掉库自带的协议层 ping，只用官方要求的文本 PING
-                async with websockets.connect(WS_URL, ping_interval=None, max_size=None) as ws:
+                async with websockets.connect(CLOB_WS_URL, ping_interval=None, max_size=None) as ws:
                     backoff = 1
                     await self.session(ws)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self.disconnect_reason = f"{SILENCE_TIMEOUT} 秒没有收到消息"
             except Exception as e:   # 断网、服务器关连接、握手失败等，一律重连
                 self.disconnect_reason = f"{type(e).__name__}: {e}"
@@ -301,7 +285,7 @@ async def main(duration, refresh_every):
     ]
     try:
         await asyncio.wait_for(collector.run(), duration)   # duration=None 表示一直跑
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print(f"已运行 {duration} 秒，停止")
     finally:
         for t in side_tasks:

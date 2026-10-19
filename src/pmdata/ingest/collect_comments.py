@@ -6,25 +6,18 @@ pm.raw.comments 是 compact topic、key 为评论 ID，启动时读一遍就知�
 """
 import argparse
 import json
-import os
 import time
 from collections import Counter
-from datetime import datetime, timezone
 
-from confluent_kafka import Consumer, Producer, TopicPartition
+from pmdata.common.config import TOPIC_COMMENTS
+from pmdata.common.gamma import get_json
+from pmdata.common.kafka import envelope, latest_by_key, make_producer
+from pmdata.common.timeutil import now_iso
+from pmdata.ingest.select_markets import load_latest_markets
 
-from fetch_markets import get_json
-from select_markets import load_latest_markets
-
-BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
-TOPIC = "pm.raw.comments"
 PAGE_SIZE = 100         # 每页 100 条主楼（limit 和 offset 都按主楼数，回复跟在主楼后面一起返回）
 EVERY = 600             # 默认每 10 分钟一轮
 PAUSE = 0.2             # 两个事件之间停一下，对接口温和一点
-
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def fingerprint(comment):
@@ -34,33 +27,7 @@ def fingerprint(comment):
 
 def load_seen():
     """读一遍 pm.raw.comments，得到 {评论 ID: 指纹}。"""
-    consumer = Consumer({
-        "bootstrap.servers": BOOTSTRAP,
-        "group.id": "collect-comments",
-        "enable.auto.commit": False,
-    })
-    meta = consumer.list_topics(TOPIC, timeout=10).topics[TOPIC]
-    partitions = [TopicPartition(TOPIC, p, 0) for p in meta.partitions]
-    remaining = {}
-    for tp in partitions:
-        low, high = consumer.get_watermark_offsets(tp, timeout=10)
-        if high > low:
-            remaining[tp.partition] = high
-    consumer.assign(partitions)
-
-    seen = {}
-    while remaining:
-        msg = consumer.poll(10)
-        if msg is None:
-            raise TimeoutError(f"读取超时，还没读完的分区：{sorted(remaining)}")
-        if msg.error():
-            raise RuntimeError(msg.error())
-        if msg.value() is not None:
-            seen[msg.key().decode()] = fingerprint(json.loads(msg.value())["payload"])
-        if msg.offset() + 1 >= remaining.get(msg.partition(), 0):
-            remaining.pop(msg.partition(), None)
-    consumer.close()
-    return seen
+    return {cid: fingerprint(e["payload"]) for cid, e in latest_by_key(TOPIC_COMMENTS, "collect-comments").items()}
 
 
 def load_events():
@@ -118,13 +85,9 @@ def run_once(producer, seen):
             if old == fp:
                 continue
             stats["新增" if old is None else "有变化"] += 1
-            envelope = {
-                "source": "gamma_comments",
-                "received_at": received_at,
-                "event_id": event_id,
-                "payload": c,                 # 接口给的原始数据，一个字都不改
-            }
-            producer.produce(TOPIC, key=cid, value=json.dumps(envelope), on_delivery=on_delivery)
+            # payload 是接口给的原始数据，一个字都不改
+            value = envelope("gamma_comments", received_at, c, event_id=event_id)
+            producer.produce(TOPIC_COMMENTS, key=cid, value=value, on_delivery=on_delivery)
             producer.poll(0)
             seen[cid] = fp
         time.sleep(PAUSE)
@@ -140,11 +103,7 @@ def run_once(producer, seen):
 
 
 def main(every):
-    producer = Producer({
-        "bootstrap.servers": BOOTSTRAP,
-        "enable.idempotence": True,
-        "compression.type": "lz4",
-    })
+    producer = make_producer()
     seen = load_seen()
     print(f"pm.raw.comments 里已有 {len(seen)} 条评论")
     while True:
@@ -161,6 +120,7 @@ def main(every):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--every", type=float, default=None, help=f"每隔多少秒拉一轮（正式运行用 {EVERY}），不填只跑一轮")
+    parser.add_argument("--every", type=float, default=None,
+                        help=f"每隔多少秒拉一轮（正式运行用 {EVERY}），不填只跑一轮")
     args = parser.parse_args()
     main(args.every)

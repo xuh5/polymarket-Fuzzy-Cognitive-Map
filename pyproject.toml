@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmdata"
+version = "0.1.0"
+description = "Polymarket 实时数据与模拟盘系统"
+requires-python = ">=3.12"
+# 运行依赖只在 requirements.txt 里维护一份（Docker 也用它装依赖）
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "ruff==0.17.1"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+# E/W 代码风格，F 常见错误（未使用的变量和 import 等），I import 排序，B 常见坑，UP 新语法
+select = ["E", "W", "F", "I", "B", "UP"]

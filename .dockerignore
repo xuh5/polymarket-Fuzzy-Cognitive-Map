@@ -1,8 +1,12 @@
 .venv/
 .git/
 .vscode/
+.pytest_cache/
+.ruff_cache/
 data/
+tests/
 __pycache__/
 *.pyc
+*.egg-info/
 *.docx
 .env

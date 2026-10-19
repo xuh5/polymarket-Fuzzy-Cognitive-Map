@@ -4,58 +4,21 @@
 """
 import argparse
 import json
-import os
 import statistics
-from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 
-from confluent_kafka import Consumer, TopicPartition
+from pmdata.common.config import TOPIC_CLOB
+from pmdata.common.kafka import read_to_end
+from pmdata.common.timeutil import parse_time
 
-BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
-TOPIC = "pm.raw.clob"
 LOW_HOUR_RATIO = 0.5   # 某小时消息量低于中位数的这个比例，就标出来
 
 
-def parse_time(s):
-    return datetime.fromisoformat(s) if s else None
-
-
-def read_since(since):
-    """用 Kafka 的按时间定位，从 since 那一刻开始读到当前末尾。"""
-    consumer = Consumer({
-        "bootstrap.servers": BOOTSTRAP,
-        "group.id": "check-clob",
-        "enable.auto.commit": False,
-    })
-    meta = consumer.list_topics(TOPIC, timeout=10).topics[TOPIC]
-    since_ms = int(since.timestamp() * 1000)
-    # 问 Kafka：每个分区里，时间戳 >= since 的第一条消息在哪个 offset
-    starts = consumer.offsets_for_times(
-        [TopicPartition(TOPIC, p, since_ms) for p in meta.partitions], timeout=10)
-
-    remaining = {}
-    for tp in starts:
-        _, high = consumer.get_watermark_offsets(tp, timeout=10)
-        if tp.offset >= 0 and tp.offset < high:   # offset 为 -1 表示这个分区在 since 之后没有消息
-            remaining[tp.partition] = high
-    consumer.assign([tp for tp in starts if tp.partition in remaining])
-
-    while remaining:
-        msg = consumer.poll(10)
-        if msg is None:
-            raise TimeoutError(f"读取超时，还没读完的分区：{sorted(remaining)}")
-        if msg.error():
-            raise RuntimeError(msg.error())
-        yield msg
-        if msg.offset() + 1 >= remaining.get(msg.partition(), 0):
-            remaining.pop(msg.partition(), None)
-    consumer.close()
-
-
 def main(hours):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     since = now - timedelta(hours=hours)
-    print(f"检查 {TOPIC}：{since:%Y-%m-%d %H:%M} ~ {now:%Y-%m-%d %H:%M} UTC（{hours:g} 小时）\n")
+    print(f"检查 {TOPIC_CLOB}：{since:%Y-%m-%d %H:%M} ~ {now:%Y-%m-%d %H:%M} UTC（{hours:g} 小时）\n")
 
     total = 0
     by_type = Counter()
@@ -67,7 +30,8 @@ def main(hours):
     connections = {}              # conn_id → 这次连接的缺口信息（缺口标记每个市场一条，按连接去重）
     first = last = None
 
-    for msg in read_since(since):
+    # 用 Kafka 的按时间定位直接跳到 since 那一刻，不从 topic 开头扫
+    for msg in read_to_end(TOPIC_CLOB, "check-clob", since=since):
         if msg.value() is None:
             continue
         e = json.loads(msg.value())
@@ -123,8 +87,9 @@ def main(hours):
         print("这段时间内没有新连接：采集器全程在线，没有断线")
     else:
         print(f"这段时间内新连接 {len(connections)} 次：采集器启动 {len(restarts)} 次，断线重连 {len(reconnects)} 次")
-    for g, sec in zip(reconnects, gap_seconds):
-        print(f"  断线 {g['disconnected_at'][5:19]} → 恢复 {g['reconnected_at'][11:19]}，缺口 {sec:.1f} 秒（{g['reason']}）")
+    for g, sec in zip(reconnects, gap_seconds, strict=True):
+        print(f"  断线 {g['disconnected_at'][5:19]} → 恢复 {g['reconnected_at'][11:19]}，"
+              f"缺口 {sec:.1f} 秒（{g['reason']}）")
     for g in restarts:
         print(f"  采集器启动 {g['reconnected_at'][5:19]}（之前停了多久要看上一条消息的时间）")
     if gap_seconds:

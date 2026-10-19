@@ -1,56 +1,18 @@
 """从 pm.raw.markets 读出所有市场，筛出要订阅的前 N 个市场和它们的 token。"""
 import json
-import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from confluent_kafka import Consumer, TopicPartition
+from pmdata.common.config import TOPIC_MARKETS
+from pmdata.common.kafka import latest_by_key
 
-BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
-TOPIC = "pm.raw.markets"
 TOP_N = 30
 MIN_DAYS_LEFT = 2   # 离到期不足这么多天的市场不订阅
 
 
 def load_latest_markets():
-    """从头读完整个 topic，每个市场只留最新一条。
-
-    compact 是 Kafka 在后台慢慢做的，同一个市场可能暂时还有多条旧消息，
-    所以这里自己按 key 去重：后读到的覆盖先读到的。
-    """
-    consumer = Consumer({
-        "bootstrap.servers": BOOTSTRAP,
-        "group.id": "select-markets",
-        "enable.auto.commit": False,   # 每次都从头读，不需要记住读到哪
-    })
-    meta = consumer.list_topics(TOPIC, timeout=10).topics[TOPIC]
-    partitions = [TopicPartition(TOPIC, p, 0) for p in meta.partitions]
-
-    # 先记下每个分区现在的末尾位置，读到那里就算读完
-    remaining = {}
-    for tp in partitions:
-        low, high = consumer.get_watermark_offsets(tp, timeout=10)
-        if high > low:
-            remaining[tp.partition] = high
-    consumer.assign(partitions)
-
-    latest = {}
-    while remaining:
-        msg = consumer.poll(10)
-        if msg is None:
-            raise TimeoutError(f"读取超时，还没读完的分区：{sorted(remaining)}")
-        if msg.error():
-            raise RuntimeError(msg.error())
-        key = msg.key().decode()
-        if msg.value() is None:
-            latest.pop(key, None)   # tombstone：这个市场已经关闭，从名录里删掉
-        else:
-            latest[key] = json.loads(msg.value())["payload"]
-        if msg.offset() + 1 >= remaining.get(msg.partition(), 0):
-            remaining.pop(msg.partition(), None)
-
-    consumer.close()
-    return list(latest.values())
+    """读完 pm.raw.markets，返回每个市场的最新数据（已关闭市场的 tombstone 会把它删掉）。"""
+    return [e["payload"] for e in latest_by_key(TOPIC_MARKETS, "select-markets").values()]
 
 
 def get_token_ids(market):
@@ -74,7 +36,7 @@ def get_token_ids(market):
     if not all(isinstance(i, str) and re.fullmatch(r"\d+", i) for i in ids):
         return None
     # 下标对齐：outcomes[0] 对应 ids[0]，二元市场里 0 是 Yes、1 是 No
-    return [{"outcome": o, "token_id": i} for o, i in zip(outcomes, ids)]
+    return [{"outcome": o, "token_id": i} for o, i in zip(outcomes, ids, strict=True)]
 
 
 def days_left(market, now):
@@ -90,7 +52,7 @@ def select_markets(markets, top_n=TOP_N, min_days_left=MIN_DAYS_LEFT, now=None):
 
     没有 endDate 的市场判断不了什么时候结束，也排除。
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     candidates = []
     for m in markets:
         if not (m.get("acceptingOrders") and m.get("enableOrderBook")):
@@ -118,7 +80,8 @@ def main():
     selected = select_markets(markets)
     print(f"共 {len(markets)} 个市场，选出 {len(selected)} 个：\n")
     for rank, s in enumerate(selected, 1):
-        print(f"{rank:2}. [{s['market_id']}] 24h 成交 ${s['volume24hr']:,.0f}  到期 {s['end_date'][:10]}  {s['question']}")
+        print(f"{rank:2}. [{s['market_id']}] 24h 成交 ${s['volume24hr']:,.0f}  "
+              f"到期 {s['end_date'][:10]}  {s['question']}")
         for t in s["tokens"]:
             print(f"      {t['outcome']:<4} {t['token_id']}")
 

@@ -12,3 +12,7 @@ data/
 
 # 编辑器
 .vscode/
+# 测试和 lint 缓存、pip install -e 生成的元数据
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

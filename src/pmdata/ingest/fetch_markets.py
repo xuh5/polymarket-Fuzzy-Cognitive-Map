@@ -4,42 +4,29 @@
 加 --every 3600 就每小时拉一次，一直运行；不加只跑一次。
 """
 import argparse
-import json
-import os
 import time
-from datetime import datetime, timezone
 
-import requests
-from confluent_kafka import Producer
+from pmdata.common.config import TOPIC_MARKETS
+from pmdata.common.gamma import get_json
+from pmdata.common.kafka import envelope, make_producer
+from pmdata.common.timeutil import now_iso
+from pmdata.ingest.select_markets import load_latest_markets
 
-from select_markets import load_latest_markets
-
-GAMMA = "https://gamma-api.polymarket.com"
-BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
-TOPIC = "pm.raw.markets"
 TAG_SLUGS = ["tech", "ai"]   # 要抓的分类标签
 PAGE_SIZE = 100
 MAX_GONE_RATIO = 0.2         # 一轮里消失的市场超过这个比例，就怀疑是 API 出错，不写 tombstone
 
-session = requests.Session()
 
+def find_gone(known_ids, fetched_ids, max_ratio=MAX_GONE_RATIO):
+    """上一轮还在、这一轮没了的市场 = 已关闭，要写 tombstone。
 
-def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-
-
-def get_json(path, params=None):
-    """调用接口；遇到限流(429)或服务器错误(5xx)就等一会儿重试。"""
-    for attempt in range(5):
-        resp = session.get(f"{GAMMA}{path}", params=params, timeout=15)
-        if resp.status_code == 429 or resp.status_code >= 500:
-            wait = 2 ** attempt
-            print(f"  收到 {resp.status_code}，{wait} 秒后重试")
-            time.sleep(wait)
-            continue
-        resp.raise_for_status()
-        return resp.json()
-    resp.raise_for_status()
+    返回 (要写 tombstone 的 ID 集合, 是否因为消失太多而放弃)。一次消失超过 max_ratio 时
+    怀疑是 API 出错（返回了不完整的列表），这一轮一个都不删。
+    """
+    gone = set(known_ids) - set(fetched_ids)
+    if known_ids and len(gone) > max_ratio * len(known_ids):
+        return set(), True
+    return gone, False
 
 
 def fetch_open_markets(tag_id):
@@ -84,23 +71,17 @@ def run_once(producer, known_ids):
 
     received_at = now_iso()
     for market_id, entry in by_id.items():
-        envelope = {
-            "source": "gamma",
-            "received_at": received_at,
-            "tag_slugs": sorted(entry["tags"]),
-            "payload": entry["market"],          # 交易所给的原始数据，一个字都不改
-        }
-        producer.produce(TOPIC, key=market_id, value=json.dumps(envelope), on_delivery=on_delivery)
+        # payload 是交易所给的原始数据，一个字都不改
+        value = envelope("gamma", received_at, entry["market"], tag_slugs=sorted(entry["tags"]))
+        producer.produce(TOPIC_MARKETS, key=market_id, value=value, on_delivery=on_delivery)
         producer.poll(0)
 
-    # 上一轮还在、这一轮没了的市场 = 已关闭
-    gone = known_ids - by_id.keys()
-    if known_ids and len(gone) > MAX_GONE_RATIO * len(known_ids):
-        print(f"  警告：{len(gone)}/{len(known_ids)} 个市场同时消失，超过 {MAX_GONE_RATIO:.0%}，"
+    gone, suspicious = find_gone(known_ids, by_id.keys())
+    if suspicious:
+        print(f"  警告：{len(known_ids - by_id.keys())}/{len(known_ids)} 个市场同时消失，超过 {MAX_GONE_RATIO:.0%}，"
               f"怀疑 API 出错，这一轮不写 tombstone")
-        gone = set()
     for market_id in gone:
-        producer.produce(TOPIC, key=market_id, value=None, on_delivery=on_delivery)
+        producer.produce(TOPIC_MARKETS, key=market_id, value=None, on_delivery=on_delivery)
         producer.poll(0)
 
     producer.flush(30)
@@ -112,11 +93,7 @@ def run_once(producer, known_ids):
 
 
 def main(every):
-    producer = Producer({
-        "bootstrap.servers": BOOTSTRAP,
-        "enable.idempotence": True,   # 防止网络重试导致重复写入
-        "compression.type": "lz4",
-    })
+    producer = make_producer()
     # 启动时先读一遍 topic，知道目前名录里有哪些市场，才能判断哪些消失了
     known_ids = {str(m["id"]) for m in load_latest_markets()}
     print(f"名录里现有 {len(known_ids)} 个市场")

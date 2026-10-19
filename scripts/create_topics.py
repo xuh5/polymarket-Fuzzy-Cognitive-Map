@@ -2,25 +2,23 @@
 
 不存在的就创建；已存在的把配置更新成下面写的样子（配置以代码为准）。分区数只能加不能减，这里不改。
 """
-import os
+from confluent_kafka.admin import AdminClient, AlterConfigOpType, ConfigEntry, ConfigResource, NewTopic, ResourceType
 
-from confluent_kafka.admin import (AdminClient, AlterConfigOpType, ConfigEntry, ConfigResource,
-                                   NewTopic, ResourceType)
+from pmdata.common.config import KAFKA_BOOTSTRAP, TOPIC_CLOB, TOPIC_COMMENTS, TOPIC_MARKETS
 
-BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")   # 容器里设成 kafka:19092
 SEVEN_DAYS_MS = str(7 * 24 * 60 * 60 * 1000)
 
 # (topic 名, 分区数, 配置)。配置里值为 None 表示删掉这项、恢复 Kafka 默认值
 TOPICS = [
-    ("pm.raw.markets",  3, {"cleanup.policy": "compact"}),   # 每个市场只留最新一条
-    ("pm.raw.clob",     3, {"retention.ms": SEVEN_DAYS_MS}),  # 订单簿+成交，保留 7 天
+    (TOPIC_MARKETS,  3, {"cleanup.policy": "compact"}),   # 每个市场只留最新一条
+    (TOPIC_CLOB,     3, {"retention.ms": SEVEN_DAYS_MS}),  # 订单簿+成交，保留 7 天
     # 评论：key 是评论 ID，每条评论只留最新版本、永久保留（重启时读一遍就知道哪些存过）
-    ("pm.raw.comments", 3, {"cleanup.policy": "compact", "retention.ms": None}),
+    (TOPIC_COMMENTS, 3, {"cleanup.policy": "compact", "retention.ms": None}),
 ]
 
 
 def main():
-    admin = AdminClient({"bootstrap.servers": BOOTSTRAP})
+    admin = AdminClient({"bootstrap.servers": KAFKA_BOOTSTRAP})
     existing = set(admin.list_topics(timeout=10).topics)
 
     to_create = [

@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 环境
 - 台式机 DESKTOP-FAQJAN1（Windows，24 小时开机）：代码在 D:\polymarket，Docker Desktop（WSL2）。所有程序都跑在台式机上。
 - 用户在笔记本上通过 VS Code Remote-SSH 连接台式机（ssh desktop）。
-- Python：项目虚拟环境 .venv，依赖写在 requirements.txt。
+- Python：项目虚拟环境 .venv。运行依赖只写在 requirements.txt（固定版本，Docker 也用它）；pyproject.toml 通过 dynamic dependencies 引用它，dev 依赖（pytest、ruff）写在 pyproject 的 `[dev]` 里。
 - 坑：通过 SSH 远程执行 docker pull 会报凭据错误（Windows 凭据管理器在 SSH 会话中不可用）。
   镜像必须由用户在台式机本地执行 docker compose pull；其他 docker 命令可以远程执行。
 - `data/`、`*.parquet`、`.env` 不进 Git。
@@ -29,33 +29,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-docker compose up -d                     # 启动 Kafka + Kafka UI
-.venv\Scripts\activate                   # 激活虚拟环境
-pip install -r requirements.txt
-python scripts/create_topics.py          # 创建 topic
-python scripts/fetch_markets.py          # 从 Gamma API 拉开放市场写入 pm.raw.markets；加 --every 3600 就每小时拉一次一直跑
-python scripts/select_markets.py         # 从 pm.raw.markets 筛出订阅名单并打印（只读 Kafka）
-python scripts/collect_clob.py --duration 300   # WebSocket 采集订单簿/成交写入 pm.raw.clob；不加 --duration 就一直跑；--refresh-every 默认 3600 秒
-python scripts/check_clob.py --hours 24  # 数据质量检查（只读）：断线/缺口、每小时消息量、重复、缺 received_at、吞吐量
-python scripts/collect_comments.py       # 轮询评论接口一轮，新增/变化的评论写 pm.raw.comments；加 --every 600 就一直跑
+.venv\Scripts\activate
+pip install -e ".[dev]"                  # 以可编辑模式安装本项目 + pytest/ruff（新环境装一次即可）
+pytest                                   # 跑测试（纯逻辑，不连网、不连 Kafka，零点几秒）
+ruff check .                             # lint；ruff check . --fix 自动修可修的
+
+python scripts/create_topics.py                       # 创建 topic / 同步已存在 topic 的配置
+python -m pmdata.ingest.fetch_markets                 # 拉一轮 Gamma 开放市场写 pm.raw.markets；--every 3600 一直跑
+python -m pmdata.ingest.select_markets                # 从 pm.raw.markets 筛出订阅名单并打印（只读）
+python -m pmdata.ingest.collect_clob --duration 300   # WebSocket 采集写 pm.raw.clob；不加 --duration 一直跑；--refresh-every 默认 3600
+python -m pmdata.ingest.collect_comments              # 轮询评论一轮写 pm.raw.comments；--every 600 一直跑
+python -m pmdata.quality.check_clob --hours 24        # 数据质量检查（只读）：断线/缺口、每小时消息量、重复、缺 received_at、吞吐量
 ```
 
-目前没有测试、lint 或构建配置。
+在宿主机手动跑采集程序时注意：容器里的采集器也在写同一个 topic（会多出 conn_id 和缺口标记，影响 check_clob 的统计）。
 
-采集程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments` 三个服务共用它，`restart: unless-stopped`）：
+## 代码结构
+
+- `src/pmdata/common/`：所有程序共用的东西，改约定只改这里。`config.py`（Kafka 地址、topic 名、接口地址）、`kafka.py`（`make_producer()`、`envelope()` 统一信封、`read_to_end()` 把 topic 读到「调用时刻」的末尾、`latest_by_key()` 读 compact topic 并按 key 去重/处理 tombstone）、`gamma.py`（带 429/5xx 重试的 `get_json`）、`timeutil.py`。
+  `read_to_end` 从每个分区的 low watermark 开始读（不是写死 offset 0：clob 的旧数据被保留策略删掉后 offset 0 不存在，consumer 会按 auto.offset.reset 跳到末尾而读不到东西）；传 `since` 时用 `offsets_for_times` 按时间定位。
+- `src/pmdata/ingest/`：阶段 1 采集（fetch_markets、select_markets、collect_clob、collect_comments）。
+- `src/pmdata/quality/`：数据质量检查。后续阶段按同样方式加 `archive/`（阶段 2）、`metrics/`、`sim/`、`replay/`。
+- `scripts/`：一次性管理脚本（create_topics.py）。`sql/`：DuckDB 查询。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
+
+## Docker
+
+采集程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments` 三个服务共用它，用 `python -m pmdata.ingest.xxx` 启动，`restart: unless-stopped`）：
 
 ```bash
-docker compose up -d                       # 启动全部服务
+docker compose ps                          # 看各容器状态
 docker logs -f collect-clob                # 看采集器日志（每分钟一行统计）
-docker logs -f fetch-markets               # 看拉市场日志（每小时一轮）
 DOCKER_BUILDKIT=0 docker build -t polymarket-app .   # 改了代码后重新构建（SSH 下必须这样）
-docker compose up -d --no-deps <服务名>     # 只重建指定服务
+docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服务
 ```
 
+- 容器里跑的是构建镜像时 COPY 进去的代码副本，改 D 盘上的代码不影响正在跑的容器；只有重建镜像 + 重建容器才会换代码。
 - SSH 下 `docker compose build` 会报凭据错误：BuildKit 即使本地有基础镜像也会去 Docker Hub 查元数据。用旧版构建器 `DOCKER_BUILDKIT=0 docker build` 直接用本地基础镜像就行；换基础镜像版本时才需要用户在台式机本地构建。
 - 重建镜像后**不要**直接 `docker compose up -d`：镜像 ID 变了，compose 会重建所有用这个镜像的容器，正在跑的采集器会被重启（产生缺口）。只想动某个服务时用 `up -d --no-deps <服务名>`。
+- 想验证新镜像又不影响正在跑的容器：用别的标签构建（`-t polymarket-app:test`），再 `docker run --rm --network polymarket_default -e KAFKA_BOOTSTRAP=kafka:19092 polymarket-app:test python -m ...` 跑只读命令。
 
-脚本的 Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`，默认 `localhost:9092`（宿主机直接跑）；容器里设为 `kafka:19092`。在宿主机手动跑 collect_clob.py 测试时注意：容器里的采集器也在写同一个 topic。
+Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），默认 `localhost:9092`（宿主机直接跑）；容器里设为 `kafka:19092`。
 
 ## Kafka（docker-compose.yml）
 - confluentinc/cp-kafka:7.9.0，单节点 KRaft，已关闭自动建 topic（`KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`）：写入不存在的 topic 会超时报错，新 topic 必须先在 create_topics.py 里建。
@@ -72,7 +85,7 @@ docker compose up -d --no-deps <服务名>     # 只重建指定服务
 | pm.raw.clob | 市场 id（conditionId，即 WS 消息的 `market` 字段） | 3 | 保留 7 天；订单簿快照、变化、成交放在同一个 topic，以保证顺序 |
 | pm.raw.comments | 评论 id | 3 | compact，永久保留每条评论的最新版本 |
 
-create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 的代码一律自己按 key 去重（后读到的覆盖先读到的）。
+create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 一律用 `latest_by_key()`（后读到的覆盖先读到的）。
 
 pm.raw.markets 的 tombstone：fetch_markets 每轮对比上一轮，从开放列表里消失的市场（已关闭）写一条 value 为空的消息，compact 后这个 key 就被删掉；`load_latest_markets()` 读到空 value 会把该市场从结果里去掉。保护：本轮拉取有任何报错就整轮作废、不写；一轮消失超过 20%（MAX_GONE_RATIO）视为 API 异常，不写 tombstone。实测 3 天后首次刷新写了 66 条，逐个查 Gamma 全部 closed=true，其中有 endDate 在 11 月但提前关闭的——光靠 endDate 过滤挡不住这种。
 
@@ -95,18 +108,19 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 ## 进度
 - 阶段 0 完成：SSH、Docker、Kafka、Kafka UI、Git。
 - 阶段 1 进行中：
-  - 已完成：建好 3 个 topic；scripts/fetch_markets.py 拉取 tech(1401)/ai(439) 标签的开放市场，去重后 2922 个写入 pm.raw.markets（同一市场可能同时带两个标签，按市场 id 去重并合并 tag_slugs）。
+  - 已完成：建好 3 个 topic；pmdata.ingest.fetch_markets 拉取 tech(1401)/ai(439) 标签的开放市场，去重后 2922 个写入 pm.raw.markets（同一市场可能同时带两个标签，按市场 id 去重并合并 tag_slugs）。
   - 市场数据中有用的字段：volume24hr、liquidityNum、acceptingOrders、enableOrderBook、clobTokenIds、events[0].id、feeSchedule（taker 费率，模拟盘要用）、orderPriceMinTickSize、orderMinSize、version。
-  - 已完成：scripts/select_markets.py 筛选订阅名单——acceptingOrders=true 且 enableOrderBook=true、endDate 距今至少 MIN_DAYS_LEFT(2) 天（已过期和无 endDate 的排除），按 volume24hr 降序取前 30 个；按 version 取两个 token（v1 解析 clobTokenIds 的 JSON 字符串，v2 用 positionIds），下标 0/1 对应 outcomes[0]/[1]。非 Yes/No 的二选一市场（如 Anthropic/OpenAI）和系列题都保留。目前数据全是 v1，v2 分支未经真实数据验证。
+  - 已完成：pmdata.ingest.select_markets 筛选订阅名单——acceptingOrders=true 且 enableOrderBook=true、endDate 距今至少 MIN_DAYS_LEFT(2) 天（已过期和无 endDate 的排除），按 volume24hr 降序取前 30 个；按 version 取两个 token（v1 解析 clobTokenIds 的 JSON 字符串，v2 用 positionIds），下标 0/1 对应 outcomes[0]/[1]。非 Yes/No 的二选一市场（如 Anthropic/OpenAI）和系列题都保留。目前数据全是 v1，v2 分支未经真实数据验证。
     已过期的市场 acceptingOrders 仍可能是 true（等待结算），所以必须单独按 endDate 过滤。
-  - 已完成（第一版）：scripts/collect_clob.py。启动时筛一次名单，运行期间不变；每 10 秒发文本 `PING`，30 秒无消息即重连，重连等待 1→2→4…最多 60 秒。
+  - 已完成（第一版）：pmdata.ingest.collect_clob。启动时筛一次名单，运行期间不变；每 10 秒发文本 `PING`，30 秒无消息即重连，重连等待 1→2→4…最多 60 秒。
     WebSocket 实测：订阅后服务器立即推送所有 token 的 book 快照（一帧 JSON 数组），所以重连后重新订阅就能拿到新快照；文档没写这一点。
   - 已完成：订阅名单自动刷新，两个程序通过 Kafka 解耦——fetch_markets.py `--every 3600` 定时拉 Gamma 写 pm.raw.markets（含 tombstone）；collect_clob.py 每 `--refresh-every` 秒重读 pm.raw.markets 重新筛名单，新旧对比后在同一连接上发 `{"assets_ids": [...], "operation": "subscribe"|"unsubscribe"}`。读 Kafka 失败或新名单为空时沿用旧名单。拉市场的程序挂了不影响采集，只是名单不再更新。
     实测动态 subscribe 后服务器同样立即推送新 token 的 book 快照。
   - 已完成：两个程序放进 Docker。24 小时验收从 2026-10-18 18:27 UTC 开始（collect-clob 首个 conn_id=8f673cdfa78a）。
-  - 已完成：scripts/check_clob.py。用 `offsets_for_times` 按时间定位到起点再读，不从头扫；断线次数按 conn_id 对缺口标记去重统计。
-  - 已完成：scripts/collect_comments.py（REST 轮询，每 10 分钟一轮，一轮约 170 秒），已放进 Docker（collect-comments）。
-  - 下一步：2026-10-19 18:27 UTC 后跑 `check_clob.py --hours 24` 出 CLOB 验收结论；评论采集器也需连续跑 24 小时确认无人工干预。
+  - 已完成：pmdata.quality.check_clob。用 `offsets_for_times` 按时间定位到起点再读，不从头扫；断线次数按 conn_id 对缺口标记去重统计。
+  - 已完成：pmdata.ingest.collect_comments（REST 轮询，每 10 分钟一轮，一轮约 170 秒），已放进 Docker（collect-comments）。
+  - 已完成（**代码已提交，尚未部署**）：项目重构为 `src/pmdata` 包 + pyproject + pytest(25 个) + ruff；Dockerfile 和 compose 的启动命令已改成 `python -m pmdata...`。正在跑的三个容器仍是重构前的旧镜像（scripts/ 结构），**部署前不要 `docker compose up -d`**——旧镜像里没有 pmdata 包，会启动失败。新镜像已用 `polymarket-app:refactor` 标签构建并冒烟测试通过。
+  - 下一步：2026-10-19 18:27 UTC（太平洋时间 11:27）后跑 `python -m pmdata.quality.check_clob --hours 24` 出 CLOB 验收结论 → 重建 `polymarket-app` 镜像，`up -d --no-deps` 依次部署 fetch-markets 和 collect-clob；collect-comments 等 2026-10-19 23:13 UTC（太平洋时间 16:13）满 24 小时验收后再部署。
   - 验收标准：连续运行 24 小时无人工干预；每条消息带本地接收时间。
 
 ## 以后的想法（暂不做）
