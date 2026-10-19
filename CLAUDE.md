@@ -107,7 +107,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 
 ## 进度
 - 阶段 0 完成：SSH、Docker、Kafka、Kafka UI、Git。
-- 阶段 1 进行中：
+- 阶段 1 完成（2026-10-19 验收通过）：
   - 已完成：建好 3 个 topic；pmdata.ingest.fetch_markets 拉取 tech(1401)/ai(439) 标签的开放市场，去重后 2922 个写入 pm.raw.markets（同一市场可能同时带两个标签，按市场 id 去重并合并 tag_slugs）。
   - 市场数据中有用的字段：volume24hr、liquidityNum、acceptingOrders、enableOrderBook、clobTokenIds、events[0].id、feeSchedule（taker 费率，模拟盘要用）、orderPriceMinTickSize、orderMinSize、version。
   - 已完成：pmdata.ingest.select_markets 筛选订阅名单——acceptingOrders=true 且 enableOrderBook=true、endDate 距今至少 MIN_DAYS_LEFT(2) 天（已过期和无 endDate 的排除），按 volume24hr 降序取前 30 个；按 version 取两个 token（v1 解析 clobTokenIds 的 JSON 字符串，v2 用 positionIds），下标 0/1 对应 outcomes[0]/[1]。非 Yes/No 的二选一市场（如 Anthropic/OpenAI）和系列题都保留。目前数据全是 v1，v2 分支未经真实数据验证。
@@ -119,9 +119,17 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成：两个程序放进 Docker。24 小时验收从 2026-10-18 18:27 UTC 开始（collect-clob 首个 conn_id=8f673cdfa78a）。
   - 已完成：pmdata.quality.check_clob。用 `offsets_for_times` 按时间定位到起点再读，不从头扫；断线次数按 conn_id 对缺口标记去重统计。
   - 已完成：pmdata.ingest.collect_comments（REST 轮询，每 10 分钟一轮，一轮约 170 秒），已放进 Docker（collect-comments）。
-  - 已完成（**代码已提交，尚未部署**）：项目重构为 `src/pmdata` 包 + pyproject + pytest(25 个) + ruff；Dockerfile 和 compose 的启动命令已改成 `python -m pmdata...`。正在跑的三个容器仍是重构前的旧镜像（scripts/ 结构），**部署前不要 `docker compose up -d`**——旧镜像里没有 pmdata 包，会启动失败。新镜像已用 `polymarket-app:refactor` 标签构建并冒烟测试通过。
-  - 下一步：2026-10-19 18:27 UTC（太平洋时间 11:27）后跑 `python -m pmdata.quality.check_clob --hours 24` 出 CLOB 验收结论 → 重建 `polymarket-app` 镜像，`up -d --no-deps` 依次部署 fetch-markets 和 collect-clob；collect-comments 等 2026-10-19 23:13 UTC（太平洋时间 16:13）满 24 小时验收后再部署。
-  - 验收标准：连续运行 24 小时无人工干预；每条消息带本地接收时间。
+  - 已完成：项目重构为 `src/pmdata` 包 + pyproject + pytest + ruff，2026-10-19 21:26 UTC 部署到三个容器。
+  - **验收结果**（collect-clob 2026-10-18 18:27 ~ 10-19 21:24 UTC，26.9 小时，无人工干预）：196.6 万条消息，缺 received_at 0 条，重复 0 条；平均 20.3 条/秒，峰值 83 条/秒；断线 1 次——服务端主动关闭（1001 going away），1.6 秒后自动重连并拿到新快照，缺口占比 0.0017%（完整率 99.998%）；名单自动刷新移出/补入 32 个市场。collect-comments 运行 22 小时、103 轮，1 次单个事件请求超时（下一轮自动补上），用户确认视为通过。
+- 阶段 2（归档与查询）：下一步。方案已定：
+  - 三个 topic 都归档成 Parquet；目录 `data/<topic>/date=YYYY-MM-DD/part-xxx.parquet`（Hive 风格分区，DuckDB 可按日期裁剪）。
+  - 信封字段拆成列（received_at、source、event_type、market、conn_id、seq 等）+ Kafka 的 partition/offset/key/timestamp，payload 原样存成 JSON 字符串；partition+offset 用于去重。
+  - 每 5 分钟（或攒够一定条数）写一个文件，**文件写成功后才提交 offset**（at-least-once：崩溃最多重复、不会丢）。
+  - 首次启动从最早的数据开始读（pm.raw.clob 最早的数据约 2026-10-23 开始被保留策略删除，要赶在那之前跑起来）。
+  - 放进 Docker（archiver 容器），`data/` 挂载到宿主机 D:\polymarket\data。小文件合并先不做。新增依赖 pyarrow、duckdb。
+  - 讨论过不用 dbt：阶段 3 的指标是实时计算（Python consumer），dbt 是批处理工具用不上；历史数据加工先用普通 SQL 文件。
+  - 待办：Python 的 `logging` 替代 print、GitHub Actions 跑 pytest/ruff（CI），可在阶段 2 开始前或过程中加。
+  - 阶段 2 起可以按 medallion 架构命名数据目录（bronze 原始归档 / silver 拆字段 / gold 指标），开工时与用户确认。
 
 ## 以后的想法（暂不做）
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
