@@ -126,8 +126,14 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 信封字段拆成列（received_at、source、event_type、market、conn_id、seq 等）+ Kafka 的 partition/offset/key/timestamp，payload 原样存成 JSON 字符串；partition+offset 用于去重。
   - 每 5 分钟（或攒够一定条数）写一个文件，**文件写成功后才提交 offset**（at-least-once：崩溃最多重复、不会丢）。
   - 首次启动从最早的数据开始读（pm.raw.clob 最早的数据约 2026-10-23 开始被保留策略删除，要赶在那之前跑起来）。
-  - 放进 Docker（archiver 容器），`data/` 挂载到宿主机 D:\polymarket\data。小文件合并先不做。新增依赖 pyarrow、duckdb。
-  - 讨论过不用 dbt：阶段 3 的指标是实时计算（Python consumer），dbt 是批处理工具用不上；历史数据加工先用普通 SQL 文件。
+  - 归档程序放进 Docker（archiver 容器），`data/` 挂载到宿主机 D:\polymarket\data。小文件合并先不做。新增依赖 pyarrow、duckdb。
+  - **用 dbt（用户 2026-10-19 决定）**：dbt 不能读 Kafka，所以分两段——Python 归档程序负责 Kafka → Parquet（练 consumer group / offset 提交），dbt-duckdb 负责 Parquet 之后的 SQL 加工（练 dbt）。
+    - 仓库根目录建 `dbt/` 项目，引擎用 DuckDB（dbt-duckdb，本机即可跑，不需要数据仓库）；归档出的 Parquet 作为 dbt 的 source。
+    - 分层对应 medallion：Parquet 原始归档 = bronze（dbt sources）；`models/staging`（silver）把 payload JSON 拆成列——如 book 快照、price_change 逐条展开、成交、缺口标记、市场名录每小时快照、评论；`models/marts`（gold）放面向分析的表。
+    - 阶段 2 验收「查出任一市场过去 24 小时的成交和盘口变化」做成 dbt 模型或 analysis。
+    - 数据质量检查（重复、缺口、非空、取值范围）尽量写成 dbt tests；`pmdata.quality.check_clob` 继续保留，用于检查 Kafka 里的实时数据。
+    - 适用范围：dbt 只管批量的历史数据加工；阶段 3 的实时指标仍然是 Python consumer 从 Kafka 读着算，dbt 是批处理工具用不上。
+    - 开工时与用户确认：dbt 运行方式（宿主机手动 / 归档后定时跑）、dbt-duckdb 版本。
   - 待办：Python 的 `logging` 替代 print、GitHub Actions 跑 pytest/ruff（CI），可在阶段 2 开始前或过程中加。
   - 阶段 2 起可以按 medallion 架构命名数据目录（bronze 原始归档 / silver 拆字段 / gold 指标），开工时与用户确认。
 
