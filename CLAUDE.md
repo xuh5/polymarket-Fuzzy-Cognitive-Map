@@ -40,6 +40,7 @@ python -m pmdata.ingest.select_markets                # 从 pm.raw.markets 筛�
 python -m pmdata.ingest.collect_clob --duration 300   # WebSocket 采集写 pm.raw.clob；不加 --duration 一直跑；--refresh-every 默认 3600
 python -m pmdata.ingest.collect_comments              # 轮询评论一轮写 pm.raw.comments；--every 600 一直跑
 python -m pmdata.quality.check_clob --hours 24        # 数据质量检查（只读）：断线/缺口、每小时消息量、重复、缺 received_at、吞吐量
+python -m pmdata.query.market_24h --list               # 列出过去 24 小时有数据的市场（不知道查哪个时先看这个）
 python -m pmdata.query.market_24h --market google      # 阶段 2 验收查询：某市场过去 24 小时的汇总/缺口/成交/盘口（读 gold 表，先 dbt build）；--hours/--end/--limit
 python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 试跑归档（用测试 group，别占用正式的 pm-archiver；配合 PM_DATA_DIR 写到别处）
 ```

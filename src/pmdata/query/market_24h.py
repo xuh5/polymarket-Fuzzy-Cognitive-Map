@@ -4,6 +4,7 @@
 数据新不新取决于上次 dbt build 的时间：查询前先在 dbt/ 目录下跑一次 dbt build。
 
 用法：
+    python -m pmdata.query.market_24h --list                       # 先列出这段时间有数据的市场
     python -m pmdata.query.market_24h --market google            # 问题里含 google 的市场（多个会列出来让你选）
     python -m pmdata.query.market_24h --market <slug / conditionId / Gamma 市场 ID>
     python -m pmdata.query.market_24h --market <...> --hours 6 --end 2026-10-19T12:00 --limit 0
@@ -174,9 +175,46 @@ def report(con, market, start, end, limit):
                 ["exchange_ts", "outcome", "best_bid", "best_ask", "spread", "mid_price", "source_event"], limit)
 
 
+def active_markets(con, start, end):
+    """这段时间内有数据（成交或盘口变化）的市场——不知道查哪个时先列出来挑。
+
+    采集状态看窗口结束前这个市场的最后一个标记：unsubscribed = 已移出订阅名单，否则还在采集。
+    """
+    return rows(con, """
+        with activity as (
+            select market_id, count(*) filter (where kind = 'trade') as trades,
+                   count(*) filter (where kind = 'book') as book_changes,
+                   min(exchange_ts) as first_data, max(exchange_ts) as last_data
+            from (
+                select market_id, exchange_ts, 'trade' as kind from gold.fct_trades
+                union all
+                select market_id, exchange_ts, 'book' from gold.fct_top_of_book
+            )
+            where exchange_ts >= $start and exchange_ts < $end
+            group by 1
+        ),
+        last_marker as (
+            select market_id, marker_type
+            from silver.stg_clob__markers
+            where received_at < $end
+            qualify row_number() over (partition by market_id order by received_at desc) = 1
+        )
+        select m.slug, left(m.question, 60) as question, a.trades, a.book_changes, a.first_data, a.last_data,
+               case when m.is_delisted then '已关闭'
+                    when l.marker_type = 'unsubscribed' then '已移出名单'
+                    else '采集中' end as status
+        from activity as a
+        join gold.dim_markets as m using (market_id)
+        left join last_marker as l using (market_id)
+        order by a.trades desc, a.book_changes desc
+    """, {"start": start, "end": end})
+
+
 def main():
     parser = argparse.ArgumentParser(description="查询某个市场一段时间内的成交和盘口变化（读 gold 表）")
-    parser.add_argument("--market", required=True, help="slug、conditionId、Gamma 市场 ID，或问题里的关键词")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--market", help="slug、conditionId、Gamma 市场 ID，或问题里的关键词")
+    group.add_argument("--list", action="store_true", help="列出这段时间内有数据的市场（不知道查哪个时用）")
     parser.add_argument("--hours", type=float, default=24, help="往前查多少小时，默认 24")
     parser.add_argument("--end", help="结束时间（UTC，如 2026-10-19T12:00），默认现在")
     parser.add_argument("--limit", type=int, default=20, help="明细最多显示最近多少行，0 = 全部")
@@ -186,6 +224,12 @@ def main():
     start = end - timedelta(hours=args.hours)
 
     con = connect()
+    if args.list:
+        found = active_markets(con, start, end)
+        print(f"{fmt(start)} ~ {fmt(end)}（UTC）有数据的市场：{len(found)} 个，按成交笔数排序")
+        print_table(found, ["slug", "question", "trades", "book_changes", "first_data", "last_data", "status"])
+        return
+
     found = find_markets(con, args.market)
     if not found:
         print(f"找不到和「{args.market}」匹配的市场")
