@@ -170,6 +170,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
 - 阶段 3（实时处理）：下一步。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
+  - 已向用户提出的拆分（2026-10-20，待下个会话拍板）：① 订单簿重建器（新 consumer group 读 pm.raw.clob；快照整份替换、price_change 改一档、gap 作废等快照；写成不依赖数据来源的纯逻辑模块，阶段 4/5 复用；验收 = 定时拉官方 REST 快照逐档对比）→ ② 实时指标（中间价、价差、盘口不平衡；成交量/热度按 1 分钟窗口）写新 topic pm.metrics.* → ③ consumer 写 Postgres + Grafana（Docker）→ ④ 延迟 p50/p99（每条指标带交易所时间/收到时间/算完时间）。
+  - 待拍板：重建器和指标放一个程序（A，推荐：订单簿是内存状态，按状态边界拆服务；指标与落库之间已有 pm.metrics 解耦）还是拆两个（B，多一跳 Kafka、要序列化订单簿）。
 
 ## 以后的想法（暂不做）
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
