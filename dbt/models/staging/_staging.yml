@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: stg_clob__trades
+    description: 成交，一行 = 一笔成交。已按 kafka_partition + kafka_offset 去重。
+    data_tests:
+      - unique:
+          column_name: "kafka_partition || '-' || kafka_offset"
+    columns:
+      - name: market_id
+        description: 市场 ID（conditionId）
+        data_tests: [not_null]
+      - name: asset_id
+        description: token ID（某个选项，如 Yes 或 No）
+        data_tests: [not_null]
+      - name: side
+        description: 吃单方向（BUY / SELL）
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["BUY", "SELL"]
+      - name: price
+        description: 成交价，0~1 之间
+        data_tests: [not_null]
+      - name: size
+        description: 成交数量（份数）
+        data_tests: [not_null]
+      - name: exchange_ts
+        description: 交易所时间（payload.timestamp，UTC）
+        data_tests: [not_null]
+      - name: received_at
+        description: 采集器收到这条消息的时间（UTC）
+        data_tests: [not_null]

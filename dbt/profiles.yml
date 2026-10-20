@@ -1,0 +1,11 @@
+# dbt 连接配置：放在项目里（dbt 会先找当前目录下的 profiles.yml），不需要 ~/.dbt/
+# 数据库就是一个 DuckDB 文件，不用装服务器。注意同一时间只能有一个程序写它（dbt 跑的时候别用别的工具打开）。
+pmdata:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ../data/warehouse.duckdb
+      threads: 4
+      settings:
+        TimeZone: UTC   # 项目里所有时间都是 UTC，显示也用 UTC

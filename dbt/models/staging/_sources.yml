@@ -1,0 +1,17 @@
+version: 2
+
+# bronze 层：archiver 写出的 Parquet 原始归档（data/bronze/<topic>/date=YYYY-MM-DD/*.parquet）
+# 路径相对于 dbt/ 目录；hive_partitioning 会把目录名里的 date= 变成一列 date
+sources:
+  - name: bronze
+    description: Kafka 三个 raw topic 的原样归档，value 列是 Kafka 消息原文（整条信封 JSON）。at-least-once 写入，可能有重复行，按 kafka_partition + kafka_offset 去重。
+    config:
+      meta:
+        external_location: "read_parquet('../data/bronze/pm.raw.{name}/*/*.parquet', hive_partitioning = true)"
+    tables:
+      - name: clob
+        description: pm.raw.clob —— 订单簿快照、盘口变化、成交、缺口/退订标记，key 为市场 ID
+      - name: markets
+        description: pm.raw.markets —— 每小时一次的 Gamma 市场名录，tombstone 表示市场已关闭
+      - name: comments
+        description: pm.raw.comments —— 评论（新增或有变化时写入一个新版本）

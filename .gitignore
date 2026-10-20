@@ -16,3 +16,8 @@ data/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+
+# dbt 运行时生成的文件（编译结果、日志、下载的包）；数据库文件在 data/ 下，已忽略
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/

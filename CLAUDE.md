@@ -30,7 +30,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 .venv\Scripts\activate
-pip install -e ".[dev]"                  # 以可编辑模式安装本项目 + pytest/ruff（新环境装一次即可）
+pip install -e ".[dev,dbt]"              # 以可编辑模式安装本项目 + pytest/ruff + dbt（新环境装一次即可）
 pytest                                   # 跑测试（纯逻辑，不连网、不连 Kafka，零点几秒）
 ruff check .                             # lint；ruff check . --fix 自动修可修的
 
@@ -43,6 +43,13 @@ python -m pmdata.quality.check_clob --hours 24        # 数据质量检查（只
 python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 试跑归档（用测试 group，别占用正式的 pm-archiver；配合 PM_DATA_DIR 写到别处）
 ```
 
+dbt（在 `dbt/` 目录下运行；Windows 上必须设 `PYTHONUTF8=1`，否则 dbt 用 GBK 读含中文的 yml 会报 UnicodeDecodeError）：
+
+```bash
+cd dbt
+PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试（PowerShell：$env:PYTHONUTF8=1; dbt build）
+```
+
 在宿主机手动跑采集程序时注意：容器里的采集器也在写同一个 topic（会多出 conn_id 和缺口标记，影响 check_clob 的统计）。
 
 ## 代码结构
@@ -52,6 +59,7 @@ python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 
 - `src/pmdata/ingest/`：阶段 1 采集（fetch_markets、select_markets、collect_clob、collect_comments）。
 - `src/pmdata/quality/`：数据质量检查。
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。后续阶段按同样方式加 `metrics/`、`sim/`、`replay/`。
+- `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
 - `scripts/`：一次性管理脚本（create_topics.py）。`sql/`：DuckDB 查询。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
 ## Docker
@@ -138,7 +146,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     - 阶段 2 验收「查出任一市场过去 24 小时的成交和盘口变化」做成 dbt 模型或 analysis。
     - 数据质量检查（重复、缺口、非空、取值范围）尽量写成 dbt tests；`pmdata.quality.check_clob` 继续保留，用于检查 Kafka 里的实时数据。
     - 适用范围：dbt 只管批量的历史数据加工；阶段 3 的实时指标仍然是 Python consumer 从 Kafka 读着算，dbt 是批处理工具用不上。
-    - dbt 先在宿主机手动跑 `dbt run`（用户 2026-10-19 决定），模型稳定后再考虑定时；dbt-duckdb 开工时查最新稳定版并固定版本。
+    - dbt 先在宿主机手动跑 `dbt run`（用户 2026-10-19 决定），模型稳定后再考虑定时。版本：dbt-core 1.12.6 + dbt-duckdb 1.11.0 + duckdb 1.5.6，放在 pyproject 的 `[dbt]` 组（Docker 不需要，不进 requirements.txt）。
+    - 数据模型（用户 2026-10-20 同意）：silver 一种事件一张表（trades、price_changes 展开、book_levels 展开、best_bid_ask、markers、markets snapshots、comments），只拆列/去重；gold 用星型模型，阶段 2 只建验收需要的 dim_markets、dim_tokens（asset_id → 市场 + Yes/No）、fct_trades、fct_top_of_book。时间两个都留：exchange_ts（payload.timestamp 毫秒）和 received_at。完整订单簿重建不放 dbt，阶段 3/5 用 Python 做。
+    - 已完成：stg_clob__trades + 8 个测试（unique partition-offset、not_null、side 取值）。bronze 实测：一天 price_change 177 万（98%）、best_bid_ask 9260、book 3286、成交仅 1524 笔。
+  - **发现：台式机时钟漂移**。received_at − exchange_ts 的中位数呈锯齿：每小时约 −0.07 秒、一天累计约 −1.6 秒后突然跳回（被校准一次），所有事件类型偏移一致；Windows Time 服务（w32time）是 STOPPED。阶段 2 不受影响（行情用 exchange_ts）；**阶段 3 测延迟之前必须由用户在台式机用管理员 PowerShell 开启 w32time 并配置 NTP**（sc config w32time start= auto; net start w32time; w32tm /config /manualpeerlist:"time.cloudflare.com,0x9" /syncfromflags:manual /update; w32tm /resync）。
   - 待办：Python 的 `logging` 替代 print，阶段 2 过程中顺手改。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
