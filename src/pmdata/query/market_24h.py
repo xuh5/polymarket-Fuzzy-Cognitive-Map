@@ -59,7 +59,12 @@ def data_freshness(con):
 
 
 def outcome_summary(con, market_id, start, end):
-    """每个选项一行：成交笔数/份数/金额、首末成交价、盘口变化次数、首末中间价、平均价差。"""
+    """每个选项一行：成交笔数/份数/金额、首末成交价、窗口内盘口变化次数、开始和结束那一刻的盘口。
+
+    fct_top_of_book 只记录买一/卖一变了的时刻，所以「某一刻的盘口」= 那一刻之前最后一次变化后的值（as-of）。
+    冷门市场可能一整天买一卖一都不变（变化全在更深的价位），窗口内 0 次变化，但盘口照样有值。
+    book_as_of 是结束时盘口的时间：市场早就被移出订阅名单的话，从这里能看出盘口已经过时。
+    """
     return rows(con, """
         with t as (
             select asset_id, count(*) as trades, sum(size) as shares, sum(notional) as notional,
@@ -69,15 +74,20 @@ def outcome_summary(con, market_id, start, end):
             group by 1
         ),
         b as (
-            select asset_id, count(*) as book_changes,
-                   arg_min(mid_price, exchange_ts) as first_mid, arg_max(mid_price, exchange_ts) as last_mid,
-                   avg(spread) as avg_spread
+            select asset_id,
+                   count(*) filter (where exchange_ts >= $start) as book_changes,
+                   arg_max(mid_price, exchange_ts) filter (where exchange_ts < $start) as mid_at_start,
+                   arg_max(mid_price, exchange_ts) as mid_at_end,
+                   arg_max(best_bid, exchange_ts) as bid_at_end,
+                   arg_max(best_ask, exchange_ts) as ask_at_end,
+                   max(exchange_ts) as book_as_of
             from gold.fct_top_of_book
-            where market_id = $m and exchange_ts >= $start and exchange_ts < $end
+            where market_id = $m and exchange_ts < $end
             group by 1
         )
         select k.outcome, coalesce(t.trades, 0) as trades, t.shares, t.notional, t.first_price, t.last_price,
-               coalesce(b.book_changes, 0) as book_changes, b.first_mid, b.last_mid, b.avg_spread
+               coalesce(b.book_changes, 0) as book_changes, b.mid_at_start, b.mid_at_end,
+               b.bid_at_end, b.ask_at_end, b.book_as_of
         from gold.dim_tokens as k
         left join t using (asset_id)
         left join b using (asset_id)
@@ -157,10 +167,12 @@ def report(con, market, start, end, limit):
     if freshness is None or end - freshness > STALE_AFTER:
         print(f"  注意：仓库数据只到 {fmt(freshness)}，要看最新数据先在 dbt/ 目录下跑 dbt build")
 
-    print("\n【汇总】")
-    print_table(outcome_summary(con, m["market_id"], start, end),
-                ["outcome", "trades", "shares", "notional", "first_price", "last_price",
-                 "book_changes", "first_mid", "last_mid", "avg_spread"])
+    summary = outcome_summary(con, m["market_id"], start, end)
+    print("\n【成交汇总】")
+    print_table(summary, ["outcome", "trades", "shares", "notional", "first_price", "last_price"])
+    print("\n【盘口汇总】mid_at_start / *_at_end = 窗口开始 / 结束那一刻的盘口；book_as_of = 结束时盘口来自什么时候")
+    print_table(summary, ["outcome", "book_changes", "mid_at_start", "mid_at_end", "bid_at_end", "ask_at_end",
+                          "book_as_of"])
 
     print("\n【采集状态】缺口 / 退订标记（第一行可能是窗口开始前的最后一个标记）")
     print_table(markers(con, m["market_id"], start, end),
@@ -170,7 +182,7 @@ def report(con, market, start, end, limit):
     print_table(trades(con, m["market_id"], start, end),
                 ["exchange_ts", "outcome", "side", "price", "size", "notional"], limit)
 
-    print("\n【盘口变化】买一 / 卖一变了才算一行")
+    print("\n【盘口变化】买一 / 卖一变了才算一行（0 行不代表没数据：可能只是更深的价位在变，盘口见上面的盘口汇总）")
     print_table(book_changes(con, m["market_id"], start, end),
                 ["exchange_ts", "outcome", "best_bid", "best_ask", "spread", "mid_price", "source_event"], limit)
 

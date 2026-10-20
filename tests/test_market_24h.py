@@ -36,6 +36,7 @@ def con():
     """)
     c.execute("""
         create table gold.fct_top_of_book as select * from (values
+            ('0-0-1', '0xA', 'a-yes', '2026-10-18 20:00:00+00'::timestamptz, 0.59, 0.61, 0.02, 0.60, 'book'),  -- 窗口前
             ('0-2-1', '0xA', 'a-yes', '2026-10-19 01:00:00+00'::timestamptz, 0.69, 0.71, 0.02, 0.70, 'price_change'),
             ('0-5-1', '0xA', 'a-yes', '2026-10-19 03:00:00+00'::timestamptz, 0.71, 0.73, 0.02, 0.72, 'price_change'),
             ('0-5-2', '0xA', 'a-no',  '2026-10-19 03:00:00+00'::timestamptz, 0.27, 0.29, 0.02, 0.28, 'price_change')
@@ -72,8 +73,24 @@ def test_summary_only_counts_window_and_lists_every_outcome(con):
     assert yes["trades"] == 2                       # 窗口前那笔和恰好在终点那笔都不算
     assert float(yes["first_price"]) == 0.70 and float(yes["last_price"]) == 0.72
     assert float(yes["notional"]) == pytest.approx(10.6)
-    assert yes["book_changes"] == 2 and float(yes["last_mid"]) == 0.72
     assert no["trades"] == 0 and no["book_changes"] == 1   # 没成交的选项也要有一行
+
+
+def test_book_summary_is_as_of_window_start_and_end(con):
+    summary = {r["outcome"]: r for r in q.outcome_summary(con, "0xA", START, END)}
+    yes, no = summary["Yes"], summary["No"]
+    assert yes["book_changes"] == 2                          # 窗口前那次变化不算「窗口内变化」
+    assert float(yes["mid_at_start"]) == 0.60                # 但它决定了窗口开始那一刻的盘口
+    assert float(yes["mid_at_end"]) == 0.72 and float(yes["bid_at_end"]) == 0.71
+    assert no["mid_at_start"] is None and float(no["mid_at_end"]) == 0.28
+
+
+def test_book_summary_when_top_of_book_never_changes_in_window(con):
+    # 冷门市场：窗口内买一卖一一次没变，盘口仍然取窗口前最后一次的值
+    late_start = datetime(2026, 10, 19, 4, 0, tzinfo=UTC)
+    yes = next(r for r in q.outcome_summary(con, "0xA", late_start, END) if r["outcome"] == "Yes")
+    assert yes["book_changes"] == 0
+    assert float(yes["mid_at_start"]) == 0.72 and float(yes["mid_at_end"]) == 0.72
 
 
 def test_details_are_in_time_order_with_outcome(con):
