@@ -134,7 +134,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成：pmdata.ingest.collect_comments（REST 轮询，每 10 分钟一轮，一轮约 170 秒），已放进 Docker（collect-comments）。
   - 已完成：项目重构为 `src/pmdata` 包 + pyproject + pytest + ruff，2026-10-19 21:26 UTC 部署到三个容器。
   - **验收结果**（collect-clob 2026-10-18 18:27 ~ 10-19 21:24 UTC，26.9 小时，无人工干预）：196.6 万条消息，缺 received_at 0 条，重复 0 条；平均 20.3 条/秒，峰值 83 条/秒；断线 1 次——服务端主动关闭（1001 going away），1.6 秒后自动重连并拿到新快照，缺口占比 0.0017%（完整率 99.998%）；名单自动刷新移出/补入 32 个市场。collect-comments 运行 22 小时、103 轮，1 次单个事件请求超时（下一轮自动补上），用户确认视为通过。
-- 阶段 2（归档与查询）：下一步。方案已定：
+- 阶段 2（归档与查询）完成（2026-10-20 用户验收通过）。交付物：archiver（bronze）、dbt silver 7 + gold 4 个模型（80 个测试）、查询工具 market_24h、正确性核对、存储/完整率指标。遗留可选：print 改 logging（阶段 3 开头顺手做）；采集器静默超时 30 秒可考虑缩短（先确认服务端回 PONG，观察几天再定）。设计与过程：
   - 三个 topic 都归档成 Parquet；目录 `data/bronze/<topic>/date=YYYY-MM-DD/part-xxx.parquet`（Hive 风格分区，DuckDB 可按日期裁剪）。
   - 信封字段拆成列（received_at、source、event_type、market、conn_id、seq 等）+ Kafka 的 partition/offset/key/timestamp，payload 原样存成 JSON 字符串；partition+offset 用于去重。
   - 每 5 分钟（或攒够一定条数）写一个文件，**文件写成功后才提交 offset**（at-least-once：崩溃最多重复、不会丢）。
@@ -168,6 +168,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - **发现：台式机时钟漂移**。received_at − exchange_ts 的中位数呈锯齿：每小时约 −0.07 秒、一天累计约 −1.6 秒后突然跳回（被校准一次），所有事件类型偏移一致；Windows Time 服务（w32time）是 STOPPED。阶段 2 不受影响（行情用 exchange_ts）；**阶段 3 测延迟之前必须由用户在台式机用管理员 PowerShell 开启 w32time 并配置 NTP**（sc config w32time start= auto; net start w32time; w32tm /config /manualpeerlist:"time.cloudflare.com,0x9" /syncfromflags:manual /update; w32tm /resync）。
   - 待办：Python 的 `logging` 替代 print，阶段 2 过程中顺手改。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
+
+- 阶段 3（实时处理）：下一步。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
 
 ## 以后的想法（暂不做）
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
