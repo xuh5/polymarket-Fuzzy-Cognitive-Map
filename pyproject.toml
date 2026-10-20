@@ -13,7 +13,7 @@ dynamic = ["dependencies"]
 [project.optional-dependencies]
 dev = ["pytest==9.1.1", "ruff==0.17.1"]
 # dbt 只在宿主机手动跑（dbt/ 目录），Docker 镜像不需要，所以不放 requirements.txt
-dbt = ["dbt-core==1.12.6", "dbt-duckdb==1.11.0", "duckdb==1.5.6"]
+dbt = ["dbt-core==1.12.6", "dbt-duckdb==1.11.0"]   # duckdb 本身在 requirements.txt 里（查询工具也用）
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

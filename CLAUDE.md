@@ -40,6 +40,7 @@ python -m pmdata.ingest.select_markets                # 从 pm.raw.markets 筛�
 python -m pmdata.ingest.collect_clob --duration 300   # WebSocket 采集写 pm.raw.clob；不加 --duration 一直跑；--refresh-every 默认 3600
 python -m pmdata.ingest.collect_comments              # 轮询评论一轮写 pm.raw.comments；--every 600 一直跑
 python -m pmdata.quality.check_clob --hours 24        # 数据质量检查（只读）：断线/缺口、每小时消息量、重复、缺 received_at、吞吐量
+python -m pmdata.query.market_24h --market google      # 阶段 2 验收查询：某市场过去 24 小时的汇总/缺口/成交/盘口（读 gold 表，先 dbt build）；--hours/--end/--limit
 python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 试跑归档（用测试 group，别占用正式的 pm-archiver；配合 PM_DATA_DIR 写到别处）
 ```
 
@@ -58,7 +59,8 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
   `read_to_end` 从每个分区的 low watermark 开始读（不是写死 offset 0：clob 的旧数据被保留策略删掉后 offset 0 不存在，consumer 会按 auto.offset.reset 跳到末尾而读不到东西）；传 `since` 时用 `offsets_for_times` 按时间定位。
 - `src/pmdata/ingest/`：阶段 1 采集（fetch_markets、select_markets、collect_clob、collect_comments）。
 - `src/pmdata/quality/`：数据质量检查。
-- `src/pmdata/archive/`：阶段 2 归档（archiver）。后续阶段按同样方式加 `metrics/`、`sim/`、`replay/`。
+- `src/pmdata/archive/`：阶段 2 归档（archiver）。
+- `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续阶段按同样方式加 `metrics/`、`sim/`、`replay/`。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
 - `scripts/`：一次性管理脚本（create_topics.py）。`sql/`：DuckDB 查询。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
@@ -150,6 +152,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     - 数据模型（用户 2026-10-20 同意）：silver 一种事件一张表（trades、price_changes 展开、book_levels 展开、best_bid_ask、markers、markets snapshots、comments），只拆列/去重；gold 用星型模型，阶段 2 只建验收需要的 dim_markets、dim_tokens（asset_id → 市场 + Yes/No）、fct_trades、fct_top_of_book。时间两个都留：exchange_ts（payload.timestamp 毫秒）和 received_at。完整订单簿重建不放 dbt，阶段 3/5 用 Python 做。
     - 已完成 silver 7 个模型 + 47 个测试（`dbt build` 约 22 秒，warehouse.duckdb 约 270MB）：stg_clob__trades / price_changes（unnest + generate_subscripts 展开，行数 = 消息数 × 2）/ book_levels（bids、asks 各自展开；level_index 是原数组下标，原数组不是按最优价排序）/ best_bid_ask / markers / stg_markets__snapshots（同时有 gamma_market_id 和 market_id=conditionId；outcomes、clobTokenIds 是 JSON 字符串要先 json() 再转数组）/ stg_comments（每条评论只留最新版本）。公共片段在 `macros/bronze_helpers.sql`（dedup_kafka、ms_to_ts），通用测试 `tests/generic/between.sql`。核对：成交里出现过的 token 100% 能在市场名录里找到。
     - 已完成 gold 4 个模型 + 25 个测试（含 relationships 外键测试）：dim_markets（每个市场最近一次有内容的快照；已关闭的保留并标 is_delisted，历史成交还要查问题文本）、dim_tokens（unnest token_ids/outcomes，asset_id → 市场 + 选项）、fct_trades（加 notional = price × size）、fct_top_of_book（price_change 的变化后最优价 + 订单簿快照算出的最优价，按 asset_id 内 kafka_offset 顺序只留买一/卖一真的变了的行；加 spread、mid_price）。
+    - 已完成：验收查询工具 pmdata.query.market_24h（duckdb 依赖移到 requirements.txt；容器镜像下次重建时才会装上，当前容器不需要）。
       盘口来源对比（10-19）：price_change 里的最优价变化 28.9 万次 / 51 个市场，best_bid_ask 事件只有 9260 次 / 29 个市场（86% 能在前者里找到），所以不用 best_bid_ask 事件。bronze 实测：一天 price_change 177 万（98%）、best_bid_ask 9260、book 3286、成交仅 1524 笔。
   - **发现：台式机时钟漂移**。received_at − exchange_ts 的中位数呈锯齿：每小时约 −0.07 秒、一天累计约 −1.6 秒后突然跳回（被校准一次），所有事件类型偏移一致；Windows Time 服务（w32time）是 STOPPED。阶段 2 不受影响（行情用 exchange_ts）；**阶段 3 测延迟之前必须由用户在台式机用管理员 PowerShell 开启 w32time 并配置 NTP**（sc config w32time start= auto; net start w32time; w32tm /config /manualpeerlist:"time.cloudflare.com,0x9" /syncfromflags:manual /update; w32tm /resync）。
   - 待办：Python 的 `logging` 替代 print，阶段 2 过程中顺手改。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
