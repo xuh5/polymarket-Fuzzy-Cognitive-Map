@@ -4,13 +4,17 @@
 加 --every 3600 就每小时拉一次，一直运行；不加只跑一次。
 """
 import argparse
+import logging
 import time
 
 from pmdata.common.config import TOPIC_MARKETS
 from pmdata.common.gamma import get_json
 from pmdata.common.kafka import envelope, make_producer
+from pmdata.common.log import setup_logging
 from pmdata.common.timeutil import now_iso
 from pmdata.ingest.select_markets import load_latest_markets
+
+log = logging.getLogger("fetch_markets")
 
 TAG_SLUGS = ["tech", "ai"]   # 要抓的分类标签
 PAGE_SIZE = 100
@@ -51,7 +55,7 @@ def fetch_all():
     for slug in TAG_SLUGS:
         tag_id = get_json(f"/tags/slug/{slug}")["id"]
         found = fetch_open_markets(tag_id)
-        print(f"  标签 {slug} (id={tag_id})：{len(found)} 个开放市场")
+        log.info(f"标签 {slug} (id={tag_id})：{len(found)} 个开放市场")
         for m in found:
             entry = by_id.setdefault(str(m["id"]), {"market": m, "tags": set()})
             entry["tags"].add(slug)
@@ -60,7 +64,7 @@ def fetch_all():
 
 def run_once(producer, known_ids):
     """拉一轮并写入 Kafka，返回这一轮之后 topic 里应有的市场 ID 集合。"""
-    print(f"[{now_iso()}] 开始拉取")
+    log.info("开始拉取")
     by_id = fetch_all()
 
     failures = []
@@ -78,14 +82,14 @@ def run_once(producer, known_ids):
 
     gone, suspicious = find_gone(known_ids, by_id.keys())
     if suspicious:
-        print(f"  警告：{len(known_ids - by_id.keys())}/{len(known_ids)} 个市场同时消失，超过 {MAX_GONE_RATIO:.0%}，"
-              f"怀疑 API 出错，这一轮不写 tombstone")
+        log.warning(f"{len(known_ids - by_id.keys())}/{len(known_ids)} 个市场同时消失，超过 {MAX_GONE_RATIO:.0%}，"
+                    f"怀疑 API 出错，这一轮不写 tombstone")
     for market_id in gone:
         producer.produce(TOPIC_MARKETS, key=market_id, value=None, on_delivery=on_delivery)
         producer.poll(0)
 
     producer.flush(30)
-    print(f"  写入 {len(by_id)} 条，tombstone {len(gone)} 条，失败 {len(failures)} 条")
+    log.info(f"写入 {len(by_id)} 条，tombstone {len(gone)} 条，失败 {len(failures)} 条")
     if failures:
         # 有写失败的，下一轮按 topic 实际状态重新对比，不能假设都写进去了
         return {str(m["id"]) for m in load_latest_markets()}
@@ -96,14 +100,14 @@ def main(every):
     producer = make_producer()
     # 启动时先读一遍 topic，知道目前名录里有哪些市场，才能判断哪些消失了
     known_ids = {str(m["id"]) for m in load_latest_markets()}
-    print(f"名录里现有 {len(known_ids)} 个市场")
+    log.info(f"名录里现有 {len(known_ids)} 个市场")
     while True:
         try:
             known_ids = run_once(producer, known_ids)
         except Exception as e:   # 一轮出错（断网、API 挂了）不影响下一轮
             if every is None:
                 raise
-            print(f"  这一轮失败：{type(e).__name__}: {e}")
+            log.warning(f"这一轮失败：{type(e).__name__}: {e}")
         if every is None:
             return
         time.sleep(every)
@@ -113,4 +117,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--every", type=float, default=None, help="每隔多少秒拉一次，不填只跑一次")
     args = parser.parse_args()
+    setup_logging()
     main(args.every)

@@ -6,14 +6,18 @@ pm.raw.comments 是 compact topic、key 为评论 ID，启动时读一遍就知�
 """
 import argparse
 import json
+import logging
 import time
 from collections import Counter
 
 from pmdata.common.config import TOPIC_COMMENTS
 from pmdata.common.gamma import get_json
 from pmdata.common.kafka import envelope, latest_by_key, make_producer
+from pmdata.common.log import setup_logging
 from pmdata.common.timeutil import now_iso
 from pmdata.ingest.select_markets import load_latest_markets
+
+log = logging.getLogger("collect_comments")
 
 PAGE_SIZE = 100         # 每页 100 条主楼（limit 和 offset 都按主楼数，回复跟在主楼后面一起返回）
 EVERY = 600             # 默认每 10 分钟一轮
@@ -68,13 +72,13 @@ def run_once(producer, seen):
         if err:
             failures.append(err)
 
-    print(f"[{now_iso()}] 开始一轮：{len(events)} 个事件，已存评论 {len(seen)} 条")
+    log.info(f"开始一轮：{len(events)} 个事件，已存评论 {len(seen)} 条")
     for event_id in events:
         try:
             comments = fetch_event_comments(event_id)
         except Exception as e:   # 一个事件失败不影响其他事件，下一轮会再拉
             stats["事件拉取失败"] += 1
-            print(f"  事件 {event_id} 拉取失败：{type(e).__name__}: {e}")
+            log.warning(f"事件 {event_id} 拉取失败：{type(e).__name__}: {e}")
             continue
         received_at = now_iso()
         stats["事件"] += 1
@@ -94,8 +98,8 @@ def run_once(producer, seen):
 
     producer.flush(30)
     stats["写入失败"] = len(failures)
-    print(f"[{now_iso()}] 一轮结束，用时 {time.time() - started:.0f} 秒  "
-          + "  ".join(f"{k}={v}" for k, v in stats.items()))
+    log.info(f"一轮结束，用时 {time.time() - started:.0f} 秒  "
+             + "  ".join(f"{k}={v}" for k, v in stats.items()))
     if failures:
         # 有写失败的，按 topic 实际内容重建，下一轮会把没写进去的再写一次
         return load_seen()
@@ -105,14 +109,14 @@ def run_once(producer, seen):
 def main(every):
     producer = make_producer()
     seen = load_seen()
-    print(f"pm.raw.comments 里已有 {len(seen)} 条评论")
+    log.info(f"pm.raw.comments 里已有 {len(seen)} 条评论")
     while True:
         try:
             seen = run_once(producer, seen)
         except Exception as e:   # 一轮出错（读 Kafka 失败等）不影响下一轮
             if every is None:
                 raise
-            print(f"  这一轮失败：{type(e).__name__}: {e}")
+            log.warning(f"这一轮失败：{type(e).__name__}: {e}")
         if every is None:
             return
         time.sleep(every)
@@ -123,4 +127,5 @@ if __name__ == "__main__":
     parser.add_argument("--every", type=float, default=None,
                         help=f"每隔多少秒拉一轮（正式运行用 {EVERY}），不填只跑一轮")
     args = parser.parse_args()
+    setup_logging()
     main(args.every)

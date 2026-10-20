@@ -56,14 +56,14 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## 代码结构
 
-- `src/pmdata/common/`：所有程序共用的东西，改约定只改这里。`config.py`（Kafka 地址、topic 名、接口地址）、`kafka.py`（`make_producer()`、`envelope()` 统一信封、`read_to_end()` 把 topic 读到「调用时刻」的末尾、`latest_by_key()` 读 compact topic 并按 key 去重/处理 tombstone）、`gamma.py`（带 429/5xx 重试的 `get_json`）、`timeutil.py`、`log.py`（`setup_logging()`，UTC 时间；新代码用 logging，老程序的 print 待改）。`config.DATA_DIR` 读环境变量 `PM_DATA_DIR`（默认 `data`，容器里是 `/app/data`）。
+- `src/pmdata/common/`：所有程序共用的东西，改约定只改这里。`config.py`（Kafka 地址、topic 名、接口地址）、`kafka.py`（`make_producer()`、`envelope()` 统一信封、`read_to_end()` 把 topic 读到「调用时刻」的末尾、`latest_by_key()` 读 compact topic 并按 key 去重/处理 tombstone）、`gamma.py`（带 429/5xx 重试的 `get_json`）、`timeutil.py`、`log.py`（`setup_logging()`，UTC 时间）。`config.DATA_DIR` 读环境变量 `PM_DATA_DIR`（默认 `data`，容器里是 `/app/data`）。
   `read_to_end` 从每个分区的 low watermark 开始读（不是写死 offset 0：clob 的旧数据被保留策略删掉后 offset 0 不存在，consumer 会按 auto.offset.reset 跳到末尾而读不到东西）；传 `since` 时用 `offsets_for_times` 按时间定位。
 - `src/pmdata/ingest/`：阶段 1 采集（fetch_markets、select_markets、collect_clob、collect_comments）。
 - `src/pmdata/quality/`：数据质量检查。
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。
 - `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续阶段按同样方式加 `metrics/`、`sim/`、`replay/`。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
-- `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`sql/`：DuckDB 查询。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
+- `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
 ## Docker
 
@@ -134,7 +134,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成：pmdata.ingest.collect_comments（REST 轮询，每 10 分钟一轮，一轮约 170 秒），已放进 Docker（collect-comments）。
   - 已完成：项目重构为 `src/pmdata` 包 + pyproject + pytest + ruff，2026-10-19 21:26 UTC 部署到三个容器。
   - **验收结果**（collect-clob 2026-10-18 18:27 ~ 10-19 21:24 UTC，26.9 小时，无人工干预）：196.6 万条消息，缺 received_at 0 条，重复 0 条；平均 20.3 条/秒，峰值 83 条/秒；断线 1 次——服务端主动关闭（1001 going away），1.6 秒后自动重连并拿到新快照，缺口占比 0.0017%（完整率 99.998%）；名单自动刷新移出/补入 32 个市场。collect-comments 运行 22 小时、103 轮，1 次单个事件请求超时（下一轮自动补上），用户确认视为通过。
-- 阶段 2（归档与查询）完成（2026-10-20 用户验收通过）。交付物：archiver（bronze）、dbt silver 7 + gold 4 个模型（80 个测试）、查询工具 market_24h、正确性核对、存储/完整率指标。遗留可选：print 改 logging（阶段 3 开头顺手做）；采集器静默超时 30 秒可考虑缩短（先确认服务端回 PONG，观察几天再定）。设计与过程：
+- 阶段 2（归档与查询）完成（2026-10-20 用户验收通过）。交付物：archiver（bronze）、dbt silver 7 + gold 4 个模型（80 个测试）、查询工具 market_24h、正确性核对、存储/完整率指标。遗留可选：采集器静默超时 30 秒可考虑缩短（先确认服务端回 PONG，观察几天再定）。设计与过程：
   - 三个 topic 都归档成 Parquet；目录 `data/bronze/<topic>/date=YYYY-MM-DD/part-xxx.parquet`（Hive 风格分区，DuckDB 可按日期裁剪）。
   - 信封字段拆成列（received_at、source、event_type、market、conn_id、seq 等）+ Kafka 的 partition/offset/key/timestamp，payload 原样存成 JSON 字符串；partition+offset 用于去重。
   - 每 5 分钟（或攒够一定条数）写一个文件，**文件写成功后才提交 offset**（at-least-once：崩溃最多重复、不会丢）。
@@ -166,7 +166,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     - **发现：断线变频繁**。阶段 1 验收期 27 小时断 1 次；10-19 23:46 起到 10-20 19:40 断了 15 次（几乎都是 `ConnectionClosedError: no close frame received or sent`，1 次 30 秒无消息），每次约 1.6 秒恢复，合计缺口约 23 秒（完整率仍约 99.97%）。原因未查，算完整率指标时一起看。
       盘口来源对比（10-19）：price_change 里的最优价变化 28.9 万次 / 51 个市场，best_bid_ask 事件只有 9260 次 / 29 个市场（86% 能在前者里找到），所以不用 best_bid_ask 事件。bronze 实测：一天 price_change 177 万（98%）、best_bid_ask 9260、book 3286、成交仅 1524 笔。
   - **发现：台式机时钟漂移**。received_at − exchange_ts 的中位数呈锯齿：每小时约 −0.07 秒、一天累计约 −1.6 秒后突然跳回（被校准一次），所有事件类型偏移一致；Windows Time 服务（w32time）是 STOPPED。阶段 2 不受影响（行情用 exchange_ts）；**阶段 3 测延迟之前必须由用户在台式机用管理员 PowerShell 开启 w32time 并配置 NTP**（sc config w32time start= auto; net start w32time; w32tm /config /manualpeerlist:"time.cloudflare.com,0x9" /syncfromflags:manual /update; w32tm /resync）。
-  - 待办：Python 的 `logging` 替代 print，阶段 2 过程中顺手改。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
+  - 已完成（2026-10-20）：长期运行的服务（fetch_markets、collect_clob、collect_comments、archiver）统一用 logging（模块里 `log = logging.getLogger(...)`，入口调 `setup_logging()`）；命令行报告（select_markets、check_clob、market_24h、scripts）保留 print，因为输出就是报告本身。**三个采集容器还在跑旧代码**，下次重建镜像时用 `up -d --no-deps <服务>` 逐个换。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
 - 阶段 3（实时处理）：下一步。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
