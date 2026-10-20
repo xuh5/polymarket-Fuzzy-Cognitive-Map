@@ -3,8 +3,7 @@ with source as (
     select *
     from {{ source('bronze', 'clob') }}
     where event_type = 'last_trade_price'
-    -- 归档是 at-least-once，崩溃重启可能写出重复行；同一个 partition + offset 只留一行
-    qualify row_number() over (partition by kafka_partition, kafka_offset order by kafka_timestamp) = 1
+    {{ dedup_kafka() }}
 )
 
 select
@@ -18,7 +17,7 @@ select
     cast(value ->> '$.payload.fee_rate_bps' as integer)             as fee_rate_bps,
     value ->> '$.payload.transaction_hash'                          as transaction_hash,
     -- 交易所时间（payload 里的毫秒时间戳）和我们收到的时间都留着，两者相减就是延迟
-    epoch_ms(cast(value ->> '$.payload.timestamp' as bigint)) at time zone 'UTC' as exchange_ts,
+    {{ ms_to_ts("value ->> '$.payload.timestamp'") }}               as exchange_ts,
     cast(received_at as timestamptz)                                as received_at,
     date
 from source

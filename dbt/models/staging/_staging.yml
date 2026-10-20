@@ -1,8 +1,11 @@
 version: 2
 
+# silver 层：一种事件一张表，只拆列、转类型、去重，不加业务逻辑。
+# 每张表都带 kafka_partition + kafka_offset，可以追溯回 bronze 里的原始消息。
+
 models:
   - name: stg_clob__trades
-    description: 成交，一行 = 一笔成交。已按 kafka_partition + kafka_offset 去重。
+    description: 成交，一行 = 一笔成交。
     data_tests:
       - unique:
           column_name: "kafka_partition || '-' || kafka_offset"
@@ -20,14 +23,177 @@ models:
               arguments:
                 values: ["BUY", "SELL"]
       - name: price
-        description: 成交价，0~1 之间
-        data_tests: [not_null]
+        description: 成交价
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 1}
       - name: size
         description: 成交数量（份数）
-        data_tests: [not_null]
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 1e12}
       - name: exchange_ts
         description: 交易所时间（payload.timestamp，UTC）
         data_tests: [not_null]
       - name: received_at
-        description: 采集器收到这条消息的时间（UTC）
+        description: 采集器收到这条消息的时间（UTC）。注意台式机时钟有漂移（见 CLAUDE.md）
         data_tests: [not_null]
+
+  - name: stg_clob__price_changes
+    description: 盘口变化，一行 = 某个 token 某个价位的一次数量变化（一条 price_change 消息展开成多行）。
+    data_tests:
+      - unique:
+          column_name: "kafka_partition || '-' || kafka_offset || '-' || change_index"
+    columns:
+      - name: market_id
+        data_tests: [not_null]
+      - name: asset_id
+        data_tests: [not_null]
+      - name: side
+        description: BUY = 买盘一侧，SELL = 卖盘一侧
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["BUY", "SELL"]
+      - name: price
+        description: 价位
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: size
+        description: 这个价位变化后的总挂单量（不是增量），0 表示这一档没了
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 1e12}
+      - name: best_bid
+        description: 变化之后的最优买价
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: best_ask
+        description: 变化之后的最优卖价
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: exchange_ts
+        data_tests: [not_null]
+
+  - name: stg_clob__book_levels
+    description: 订单簿快照，一行 = 某次快照某一侧的一档。snapshot_id 相同的行属于同一次快照。
+    data_tests:
+      - unique:
+          column_name: "snapshot_id || '-' || side || '-' || level_index"
+    columns:
+      - name: snapshot_id
+        description: 快照编号（kafka_partition-kafka_offset）
+        data_tests: [not_null]
+      - name: source
+        description: clob_ws（WebSocket 推送）或 clob_rest（重连后补拉）
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["clob_ws", "clob_rest"]
+      - name: market_id
+        data_tests: [not_null]
+      - name: asset_id
+        data_tests: [not_null]
+      - name: side
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["BUY", "SELL"]
+      - name: price
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: size
+        data_tests:
+          - not_null
+          - between:
+              arguments: {min_value: 0, max_value: 1e12}
+
+  - name: stg_clob__best_bid_ask
+    description: 最优买卖价，一行 = 某个 token 的最优买价 / 卖价变了一次。
+    data_tests:
+      - unique:
+          column_name: "kafka_partition || '-' || kafka_offset"
+    columns:
+      - name: market_id
+        data_tests: [not_null]
+      - name: asset_id
+        data_tests: [not_null]
+      - name: best_bid
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: best_ask
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: spread
+        description: 卖一 − 买一
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+
+  - name: stg_clob__markers
+    description: 采集器写的缺口（gap）和退订（unsubscribed）标记，一行 = 某个市场的一个标记。
+    data_tests:
+      - unique:
+          column_name: "kafka_partition || '-' || kafka_offset"
+    columns:
+      - name: market_id
+        data_tests: [not_null]
+      - name: marker_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["gap", "unsubscribed"]
+      - name: disconnected_at
+        description: 断开的时间；为空表示采集器刚启动或这个市场刚加入订阅名单（看 reason）
+      - name: reconnected_at
+        description: 恢复的时间（gap 才有）
+      - name: unsubscribed_at
+        description: 退订的时间（unsubscribed 才有）
+
+  - name: stg_markets__snapshots
+    description: 市场名录，一行 = 某个市场在某一次（每小时）拉取时的状态；tombstone（已关闭）也有一行。
+    data_tests:
+      - unique:
+          column_name: "kafka_partition || '-' || kafka_offset"
+    columns:
+      - name: gamma_market_id
+        description: Gamma 的市场 ID（pm.raw.markets 的 key）
+        data_tests: [not_null]
+      - name: market_id
+        description: conditionId，和 clob 表 join 用；tombstone 行为空
+        data_tests:
+          - not_null:
+              config:
+                where: "not is_tombstone"
+      - name: token_ids
+        description: 两个 token ID，下标和 outcomes 对齐（outcomes[1] 对应 token_ids[1]）
+      - name: outcomes
+        description: 选项名，如 ["Yes", "No"]
+      - name: volume_24hr
+        description: 24 小时成交额（没有该字段时为 0）
+      - name: taker_fee_rate
+        description: taker 手续费率（feeSchedule.rate）
+
+  - name: stg_comments
+    description: 评论，一行 = 一条评论的最新版本。
+    columns:
+      - name: comment_id
+        data_tests: [unique, not_null]
+      - name: event_id
+        description: 评论所属的事件（评论只能按事件查，不能按市场）
+        data_tests: [not_null]
+      - name: reaction_count
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1e9}
