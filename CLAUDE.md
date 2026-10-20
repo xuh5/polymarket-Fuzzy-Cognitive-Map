@@ -159,6 +159,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
       1. 独立实现对账：用 Python 直接解析 bronze 原始 JSON（不经 SQL），自己去重、按 offset 顺序推算买一卖一变化，和 gold 逐条比对；两次随机共 12 个市场（含 4 个正在采集的活跃市场，最多 307 笔成交 / 2 万次变化）全部逐条一致。注意比对时要截到仓库建表时的 offset（之后 archiver 又写了新数据）。
       2. 和官方 Data API v2 `GET https://data-api.polymarket.com/v2/trades?condition=<conditionId>&filter_amount=0&taker_only=true`（游标分页 next_cursor；start/end 只对 user 查询生效，按市场只能从新往旧翻；timestamp 是区块时间秒；默认 filter_amount 会滤掉 0.01 份以下）按 (transaction_hash, token_id) 配对：10-20 13:00~19:30 一直在采集的 5 个市场共 253 笔，全部配上、数量全部一致，期间 5 次断线没有漏成交。
       3. 永久对账测试 `dbt/tests/assert_clob_silver_counts_match_bronze.sql`：silver 各表行数 = bronze 去重后的消息数（price_change 按数组长度、快照按快照数），只比 silver 建表时读到的 offset 范围。
+    - **指标（2026-10-20 统计）**：
+      - 存储：10-19 全天 clob 178.6 万条，原始 JSON 1388MB → Parquet(zstd) 156.5MB，**压缩 8.9 倍**（约 88 字节/条）；markets 559MB → 37.7MB（14.8 倍，每小时整份名录，重复度高）；comments 可忽略。对比 Kafka 里 lz4 只压到约 1.3 倍（按条压缩、批次小）。按现在的量一年 clob 约 57GB。
+      - 小文件：每 5 分钟一个文件，clob 一天约 290 个（10-20 已 197 个），暂不影响查询，量大了再做合并。
+      - 完整率（缺口 = 重连时刻 − 重连前最后一条 WS 消息的时间，所有市场合计）：10-19 全天重连 3 次、缺口 15.5 秒，**99.982%**（含 21:26 部署重启 10.7 秒）；10-20 0:00~20:40 重连 14 次、缺口 67.9 秒，**99.909%**——其中 12:37 服务端 42 秒不发消息也不断开，靠 30 秒无消息超时才发现，单次占 41.6 秒。同期 collect-comments、fetch-markets 的 REST 请求全部正常，只有 WebSocket 长连接被断，原因未定（可能是服务端/中间网络回收长连接）。
     - **发现：断线变频繁**。阶段 1 验收期 27 小时断 1 次；10-19 23:46 起到 10-20 19:40 断了 15 次（几乎都是 `ConnectionClosedError: no close frame received or sent`，1 次 30 秒无消息），每次约 1.6 秒恢复，合计缺口约 23 秒（完整率仍约 99.97%）。原因未查，算完整率指标时一起看。
       盘口来源对比（10-19）：price_change 里的最优价变化 28.9 万次 / 51 个市场，best_bid_ask 事件只有 9260 次 / 29 个市场（86% 能在前者里找到），所以不用 best_bid_ask 事件。bronze 实测：一天 price_change 177 万（98%）、best_bid_ask 9260、book 3286、成交仅 1524 笔。
   - **发现：台式机时钟漂移**。received_at − exchange_ts 的中位数呈锯齿：每小时约 −0.07 秒、一天累计约 −1.6 秒后突然跳回（被校准一次），所有事件类型偏移一致；Windows Time 服务（w32time）是 STOPPED。阶段 2 不受影响（行情用 exchange_ts）；**阶段 3 测延迟之前必须由用户在台式机用管理员 PowerShell 开启 w32time 并配置 NTP**（sc config w32time start= auto; net start w32time; w32tm /config /manualpeerlist:"time.cloudflare.com,0x9" /syncfromflags:manual /update; w32tm /resync）。
