@@ -1,4 +1,4 @@
-# 采集程序的镜像：fetch-markets 和 collect-clob 共用，只是启动命令不同
+# 项目程序的镜像：采集器和归档程序共用，只是启动命令不同
 FROM python:3.12-slim
 
 WORKDIR /app

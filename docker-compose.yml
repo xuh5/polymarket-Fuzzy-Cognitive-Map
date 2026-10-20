@@ -81,5 +81,22 @@ services:
     command: python -m pmdata.ingest.collect_comments --every 600
     logging: *logging
 
+  # 一直运行：读三个 raw topic，每 5 分钟写一批 Parquet 到 data/bronze/（文件写成功后才提交 offset）
+  archiver:
+    build: .
+    image: polymarket-app
+    container_name: archiver
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      PM_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data             # 归档文件直接落在宿主机 D:\polymarket\data
+    stop_grace_period: 60s           # docker stop 后给它时间写完手里的数据再退出（默认只等 10 秒）
+    command: python -m pmdata.archive.archiver
+    logging: *logging
+
 volumes:
   kafka-data:

@@ -2,3 +2,4 @@ confluent-kafka==2.16.0
 requests==2.34.2
 websockets==17.2
 python-dotenv==1.2.4
+pyarrow==26.0.0

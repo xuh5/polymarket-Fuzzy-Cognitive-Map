@@ -40,21 +40,23 @@ python -m pmdata.ingest.select_markets                # 从 pm.raw.markets 筛�
 python -m pmdata.ingest.collect_clob --duration 300   # WebSocket 采集写 pm.raw.clob；不加 --duration 一直跑；--refresh-every 默认 3600
 python -m pmdata.ingest.collect_comments              # 轮询评论一轮写 pm.raw.comments；--every 600 一直跑
 python -m pmdata.quality.check_clob --hours 24        # 数据质量检查（只读）：断线/缺口、每小时消息量、重复、缺 received_at、吞吐量
+python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 试跑归档（用测试 group，别占用正式的 pm-archiver；配合 PM_DATA_DIR 写到别处）
 ```
 
 在宿主机手动跑采集程序时注意：容器里的采集器也在写同一个 topic（会多出 conn_id 和缺口标记，影响 check_clob 的统计）。
 
 ## 代码结构
 
-- `src/pmdata/common/`：所有程序共用的东西，改约定只改这里。`config.py`（Kafka 地址、topic 名、接口地址）、`kafka.py`（`make_producer()`、`envelope()` 统一信封、`read_to_end()` 把 topic 读到「调用时刻」的末尾、`latest_by_key()` 读 compact topic 并按 key 去重/处理 tombstone）、`gamma.py`（带 429/5xx 重试的 `get_json`）、`timeutil.py`。
+- `src/pmdata/common/`：所有程序共用的东西，改约定只改这里。`config.py`（Kafka 地址、topic 名、接口地址）、`kafka.py`（`make_producer()`、`envelope()` 统一信封、`read_to_end()` 把 topic 读到「调用时刻」的末尾、`latest_by_key()` 读 compact topic 并按 key 去重/处理 tombstone）、`gamma.py`（带 429/5xx 重试的 `get_json`）、`timeutil.py`、`log.py`（`setup_logging()`，UTC 时间；新代码用 logging，老程序的 print 待改）。`config.DATA_DIR` 读环境变量 `PM_DATA_DIR`（默认 `data`，容器里是 `/app/data`）。
   `read_to_end` 从每个分区的 low watermark 开始读（不是写死 offset 0：clob 的旧数据被保留策略删掉后 offset 0 不存在，consumer 会按 auto.offset.reset 跳到末尾而读不到东西）；传 `since` 时用 `offsets_for_times` 按时间定位。
 - `src/pmdata/ingest/`：阶段 1 采集（fetch_markets、select_markets、collect_clob、collect_comments）。
-- `src/pmdata/quality/`：数据质量检查。后续阶段按同样方式加 `archive/`（阶段 2）、`metrics/`、`sim/`、`replay/`。
+- `src/pmdata/quality/`：数据质量检查。
+- `src/pmdata/archive/`：阶段 2 归档（archiver）。后续阶段按同样方式加 `metrics/`、`sim/`、`replay/`。
 - `scripts/`：一次性管理脚本（create_topics.py）。`sql/`：DuckDB 查询。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
 ## Docker
 
-采集程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments` 三个服务共用它，用 `python -m pmdata.ingest.xxx` 启动，`restart: unless-stopped`）：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver` 四个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -122,20 +124,23 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成：项目重构为 `src/pmdata` 包 + pyproject + pytest + ruff，2026-10-19 21:26 UTC 部署到三个容器。
   - **验收结果**（collect-clob 2026-10-18 18:27 ~ 10-19 21:24 UTC，26.9 小时，无人工干预）：196.6 万条消息，缺 received_at 0 条，重复 0 条；平均 20.3 条/秒，峰值 83 条/秒；断线 1 次——服务端主动关闭（1001 going away），1.6 秒后自动重连并拿到新快照，缺口占比 0.0017%（完整率 99.998%）；名单自动刷新移出/补入 32 个市场。collect-comments 运行 22 小时、103 轮，1 次单个事件请求超时（下一轮自动补上），用户确认视为通过。
 - 阶段 2（归档与查询）：下一步。方案已定：
-  - 三个 topic 都归档成 Parquet；目录 `data/<topic>/date=YYYY-MM-DD/part-xxx.parquet`（Hive 风格分区，DuckDB 可按日期裁剪）。
+  - 三个 topic 都归档成 Parquet；目录 `data/bronze/<topic>/date=YYYY-MM-DD/part-xxx.parquet`（Hive 风格分区，DuckDB 可按日期裁剪）。
   - 信封字段拆成列（received_at、source、event_type、market、conn_id、seq 等）+ Kafka 的 partition/offset/key/timestamp，payload 原样存成 JSON 字符串；partition+offset 用于去重。
   - 每 5 分钟（或攒够一定条数）写一个文件，**文件写成功后才提交 offset**（at-least-once：崩溃最多重复、不会丢）。
-  - 首次启动从最早的数据开始读（pm.raw.clob 最早的数据约 2026-10-23 开始被保留策略删除，要赶在那之前跑起来）。
-  - 归档程序放进 Docker（archiver 容器），`data/` 挂载到宿主机 D:\polymarket\data。小文件合并先不做。新增依赖 pyarrow、duckdb。
+  - **已完成：pmdata.archive.archiver，2026-10-20 05:04 UTC 起在 Docker（archiver 容器）里运行**。一个 consumer（group `pm-archiver`）订阅三个 topic，每个 topic 各攒一批，满 5 分钟或 10 万条写一个文件；按 Kafka 时间戳的 UTC 日期分目录（跨午夜的批次拆成两个文件）；先写 .tmp 再改名；SIGTERM 时写完剩余数据、提交后退出。
+    列：kafka_partition/offset/key/timestamp、source、received_at、各 topic 抽取列（clob：event_type/market/conn_id/seq/frame_index；comments：event_id；markets：is_tombstone）+ `value` = **Kafka 消息原文**（整条信封，不经 json 重新序列化，避免 0.50→0.5、中文转义之类的改动；tombstone 为 null）。抽取列只为过滤方便，以 value 为准。
+    首次启动从 offset 0 补读 4 天积压（240 万条）十几秒追上；Kafka 里 lz4 的 1.35GB → Parquet zstd 约 200MB。核对：每个分区 offset 从 0 连续、无重复、已提交 = 最后一条 + 1；docker restart 后从提交位置继续、无重复。
+    分区倾斜（clob p0/p1/p2 ≈ 49%/34%/17%）：按市场 key 分区 + 单个热门市场占 11%，属 key skew；当前吞吐下无影响，保持按市场分区以保证同市场有序。
+    小文件合并先不做。duckdb 等做 dbt 时再加。
   - **用 dbt（用户 2026-10-19 决定）**：dbt 不能读 Kafka，所以分两段——Python 归档程序负责 Kafka → Parquet（练 consumer group / offset 提交），dbt-duckdb 负责 Parquet 之后的 SQL 加工（练 dbt）。
     - 仓库根目录建 `dbt/` 项目，引擎用 DuckDB（dbt-duckdb，本机即可跑，不需要数据仓库）；归档出的 Parquet 作为 dbt 的 source。
     - 分层对应 medallion：Parquet 原始归档 = bronze（dbt sources）；`models/staging`（silver）把 payload JSON 拆成列——如 book 快照、price_change 逐条展开、成交、缺口标记、市场名录每小时快照、评论；`models/marts`（gold）放面向分析的表。
     - 阶段 2 验收「查出任一市场过去 24 小时的成交和盘口变化」做成 dbt 模型或 analysis。
     - 数据质量检查（重复、缺口、非空、取值范围）尽量写成 dbt tests；`pmdata.quality.check_clob` 继续保留，用于检查 Kafka 里的实时数据。
     - 适用范围：dbt 只管批量的历史数据加工；阶段 3 的实时指标仍然是 Python consumer 从 Kafka 读着算，dbt 是批处理工具用不上。
-    - 开工时与用户确认：dbt 运行方式（宿主机手动 / 归档后定时跑）、dbt-duckdb 版本。
-  - 待办：Python 的 `logging` 替代 print、GitHub Actions 跑 pytest/ruff（CI），可在阶段 2 开始前或过程中加。
-  - 阶段 2 起可以按 medallion 架构命名数据目录（bronze 原始归档 / silver 拆字段 / gold 指标），开工时与用户确认。
+    - dbt 先在宿主机手动跑 `dbt run`（用户 2026-10-19 决定），模型稳定后再考虑定时；dbt-duckdb 开工时查最新稳定版并固定版本。
+  - 待办：Python 的 `logging` 替代 print，阶段 2 过程中顺手改。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
+  - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
 ## 以后的想法（暂不做）
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
