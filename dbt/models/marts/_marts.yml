@@ -1,0 +1,88 @@
+version: 2
+
+# gold 层：星型模型。dim_* 是维度（市场、token，用来描述和筛选），fct_* 是事实（发生过的事）。
+# 事实表只存 ID 和数字，用 market_id / asset_id join 维度表拿问题文本和 Yes/No。
+
+models:
+  - name: dim_markets
+    description: 市场维度，一行 = 一个市场（名录里最近一次的状态）。已关闭的市场也保留（is_delisted）。
+    columns:
+      - name: market_id
+        description: conditionId，事实表用它 join
+        data_tests: [unique, not_null]
+      - name: gamma_market_id
+        description: Gamma 的市场 ID
+        data_tests: [unique, not_null]
+      - name: question
+        data_tests: [not_null]
+      - name: is_delisted
+        description: 已从开放列表消失（已关闭）
+      - name: taker_fee_rate
+        description: taker 手续费率（模拟盘要用）
+
+  - name: dim_tokens
+    description: token 维度，一行 = 一个 token（某个市场的某个选项）。
+    columns:
+      - name: asset_id
+        data_tests: [unique, not_null]
+      - name: market_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_markets')
+                field: market_id
+      - name: outcome
+        description: 选项名（Yes / No，或二选一市场里的具体名字）
+        data_tests: [not_null]
+      - name: outcome_index
+        description: 1 = 第一个选项，2 = 第二个
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2]
+
+  - name: fct_trades
+    description: 成交事实，一行 = 一笔成交。
+    columns:
+      - name: trade_id
+        data_tests: [unique, not_null]
+      - name: market_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_markets')
+                field: market_id
+      - name: asset_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_tokens')
+                field: asset_id
+      - name: notional
+        description: 成交金额（美元）= price × size
+
+  - name: fct_top_of_book
+    description: 盘口事实，一行 = 某个 token 的买一或卖一变了一次（来自 price_change 和订单簿快照）。
+    columns:
+      - name: tob_id
+        data_tests: [unique, not_null]
+      - name: asset_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_tokens')
+                field: asset_id
+      - name: source_event
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["price_change", "book"]
+      - name: spread
+        description: 卖一 − 买一；正常应 ≥ 0
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+      - name: mid_price
+        description: 中间价 =（买一 + 卖一）/ 2，常被当作市场认为的概率
