@@ -169,13 +169,16 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成（2026-10-20）：长期运行的服务（fetch_markets、collect_clob、collect_comments、archiver）统一用 logging（模块里 `log = logging.getLogger(...)`，入口调 `setup_logging()`）；命令行报告（select_markets、check_clob、market_24h、scripts）保留 print，因为输出就是报告本身。**三个采集容器还在跑旧代码**，下次重建镜像时用 `up -d --no-deps <服务>` 逐个换。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
-- 阶段 3（实时处理）：下一步。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
+- 阶段 3（实时处理）：下一步（用户 2026-10-20 确认先做阶段 3）。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
+  - 和阶段 2 的区别：阶段 2 的 fct_top_of_book 只有买一卖一（直接取 price_change 自带的 best_bid/best_ask），且是批量事后算；阶段 3 在内存里实时维护完整多档订单簿，阶段 4 模拟吃单算滑点要用。
+  - 具体做哪些实时指标、怎么定义还没定（用户 2026-10-20：有待商榷），先给候选清单再由用户挑。
   - 已向用户提出的拆分（2026-10-20，待下个会话拍板）：① 订单簿重建器（新 consumer group 读 pm.raw.clob；快照整份替换、price_change 改一档、gap 作废等快照；写成不依赖数据来源的纯逻辑模块，阶段 4/5 复用；验收 = 定时拉官方 REST 快照逐档对比）→ ② 实时指标（中间价、价差、盘口不平衡；成交量/热度按 1 分钟窗口）写新 topic pm.metrics.* → ③ consumer 写 Postgres + Grafana（Docker）→ ④ 延迟 p50/p99（每条指标带交易所时间/收到时间/算完时间）。
   - 待拍板：重建器和指标放一个程序（A，推荐：订单簿是内存状态，按状态边界拆服务；指标与落库之间已有 pm.metrics 解耦）还是拆两个（B，多一跳 Kafka、要序列化订单簿）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
-- 用户想加 Airflow / Spark，并可能大改阶段 3~5 计划（2026-10-20 提出，下个会话再定）。已给的建议：Airflow 适合调度批处理（dbt build、小文件合并、数据质量检查、核对脚本、阶段 6 的历史回填），可以早做；Spark 在当前数据量（clob 约 150MB/天）下没有必要，DuckDB 更快，若要练可做成对比实验（如阶段 3 用 Spark Structured Streaming 实现一版指标对比 Python consumer，或阶段 6 大量历史回填 + S3 时用）。
+- Airflow（用户 2026-10-20 决定：先做阶段 3，Airflow 以后再做，计划不大改）。想做的 DAG：① 每天定时 dbt build（silver/gold 是快照，现在靠手动 build 更新）② 数据质量检查（check_clob + dbt test，不达标通知用户）③ 上游新鲜度检查（可用 dbt `source freshness`；分钟级的「采集器挂了」更适合阶段 3 的 Grafana 告警）④ bronze 小文件合并 ⑤ 每天抽几个市场和官方 Data API 对账（用户同意把核对脚本改成定期任务）。之后还可放阶段 5 的每晚回测、阶段 6 的历史回填。待定：通知渠道（邮件 / Telegram / Discord）。Airflow 只调度批处理，常驻服务仍由 Docker 管。
+- Spark：用户同意当前数据量（clob 约 150MB/天）不需要，DuckDB 更快；放到阶段 5 以后（如阶段 6 大量历史回填 + S3）再考虑。
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
 - 阶段 6：历史价格（prices history，可回填几个月，用于更长回测；一次性批量数据应直接写 Parquet，不走 Kafka）；带钱包地址的成交明细、持仓大户、排行榜、按钱包的交易历史/已平仓持仓/盈亏曲线（胜率需自己从已平仓持仓算），用于大户/聪明钱分析。
 - negRisk 套利候选：订阅整个 negRisk 事件的全部选项（如「谁有最好的 AI 模型」各家公司），检查各选项 Yes 价格之和是否偏离 1。偏离（扣除手续费后）可作为套利策略的候选，留到阶段 4 模拟交易时考虑。
