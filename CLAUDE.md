@@ -173,7 +173,12 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 和阶段 2 的区别：阶段 2 的 fct_top_of_book 只有买一卖一（直接取 price_change 自带的 best_bid/best_ask），且是批量事后算；阶段 3 在内存里实时维护完整多档订单簿，阶段 4 模拟吃单算滑点要用。
   - 具体做哪些实时指标、怎么定义还没定（用户 2026-10-20：有待商榷），先给候选清单再由用户挑。
   - 已向用户提出的拆分（2026-10-20，待下个会话拍板）：① 订单簿重建器（新 consumer group 读 pm.raw.clob；快照整份替换、price_change 改一档、gap 作废等快照；写成不依赖数据来源的纯逻辑模块，阶段 4/5 复用；验收 = 定时拉官方 REST 快照逐档对比）→ ② 实时指标（中间价、价差、盘口不平衡；成交量/热度按 1 分钟窗口）写新 topic pm.metrics.* → ③ consumer 写 Postgres + Grafana（Docker）→ ④ 延迟 p50/p99（每条指标带交易所时间/收到时间/算完时间）。
-  - 待拍板：重建器和指标放一个程序（A，推荐：订单簿是内存状态，按状态边界拆服务；指标与落库之间已有 pm.metrics 解耦）还是拆两个（B，多一跳 Kafka、要序列化订单簿）。
+  - 用户 2026-10-21 选 A：重建器和指标放一个程序（订单簿是内存状态，按状态边界拆服务；指标与落库之间已有 pm.metrics 解耦）。
+  - 2026-10-21 用户已开启 w32time（自动启动，源 time.cloudflare.com），但默认配置校正很慢（MinPollInterval 10 = 17 分钟、UpdateInterval 360000），开启后仍慢约 0.98 秒；测延迟前还要调快（待处理）。
+  - 已完成：订单簿模块 `src/pmdata/book/orderbook.py`（纯逻辑：`BookStore.apply(信封)` → 有变化的 asset_id；价格/数量用 Decimal；快照整份替换、price_change 的 size 是该价位新总量、0 删除；gap 作废、unsubscribed/market_resolved 删除；不可用时的 price_change 忽略并计数）+ tests/test_orderbook.py。
+    回放核对 `scripts/verify_book_replay.py`（bronze 全量 5 天、1020 万次）：本地买一卖一 vs price_change 自带的 best_bid/best_ask 不一致 189 次（0.002%），全部在 10-21 06:52 唯一一次 REST 补拉之后 4 分钟内（REST 快照时间戳比当时 WS 流还旧，之后自愈）。
+    发现：交易所会把同一时刻的一次更新拆成多条消息（交易所时间戳相同），每条带的最优价都是全部改完后的；同一条消息里同一 token 有多处变化时也一样。所以按（token, 时间戳）分组比对；阶段 3 算指标时也要注意这种「半步」状态。交易所用 best_bid=0 / best_ask=1 表示该侧为空。
+    按单日回放时开头没有快照，会忽略大量变化（正常）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
