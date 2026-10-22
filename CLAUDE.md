@@ -43,6 +43,8 @@ python -m pmdata.quality.check_clob --hours 24        # 数据质量检查（只
 python -m pmdata.query.market_24h --list               # 列出过去 24 小时有数据的市场（不知道查哪个时先看这个）
 python -m pmdata.query.market_24h --market google      # 阶段 2 验收查询：某市场过去 24 小时的汇总/缺口/成交/盘口（读 gold 表，先 dbt build）；--hours/--end/--limit
 python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 试跑归档（用测试 group，别占用正式的 pm-archiver；配合 PM_DATA_DIR 写到别处）
+python -m pmdata.metrics.run --group-id pm-metrics-test --warmup-hours 2 --duration 120   # 试跑实时指标（注意：会写进正式的 pm.metrics.* topic）
+python scripts/verify_book_replay.py [日期]             # 回放 bronze 核对本地订单簿（全量约 2.5 分钟、CPU 占满，尽量指定日期）
 ```
 
 dbt（在 `dbt/` 目录下运行；Windows 上必须设 `PYTHONUTF8=1`，否则 dbt 用 GBK 读含中文的 yml 会报 UnicodeDecodeError）：
@@ -97,6 +99,8 @@ Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），
 | pm.raw.markets | 市场 id | 3 | compact |
 | pm.raw.clob | 市场 id（conditionId，即 WS 消息的 `market` 字段） | 3 | 保留 7 天；订单簿快照、变化、成交放在同一个 topic，以保证顺序 |
 | pm.raw.comments | 评论 id | 3 | compact，永久保留每条评论的最新版本 |
+| pm.metrics.book | 市场 id | 3 | 保留 7 天；盘口类指标，按 token 每秒最多一条 |
+| pm.metrics.trades | 市场 id | 3 | 保留 7 天；成交类指标，按 token 每分钟一条 |
 
 create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 一律用 `latest_by_key()`（后读到的覆盖先读到的）。
 
@@ -185,11 +189,14 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     「这一秒/分钟结束」：同市场消息同分区有序，收到该市场更晚的消息即结束；冷门市场靠运行程序每秒 `flush(现在 − 宽限)` 兜底，回放结束调 `flush()`。别的市场的时间推进不能用来结束本市场（在别的分区，回放时分区顺序和实时不同）。
     成交按 token 而不是按市场汇总（主动买 Yes 和主动买 No 意思相反）。WS 成交的 side = 吃单方方向：和官方 Data API taker_only 逐笔比对 869 笔全部一致。
     log-odds 价格夹到 [0.001, 0.999]；价格变化 = logit(现在中间价) − logit(N 秒前那一刻的中间价)，没有那么早的数据时为 null。数据新鲜度（指标 9）放在运行程序里，不在 engine。
+    运行程序 `pmdata.metrics.run`（group `pm-metrics`）：启动时 offsets_for_times 往回 24 小时预热（只更新状态不输出），offset >= 上次提交位置才输出；第一次启动从当前末尾开始输出（`plan_start`）。at-least-once：producer.flush 确认后才提交；写 Kafka 失败直接退出让 Docker 重启。所有分区追上后每秒 `flush(现在 − 3 秒)` 兜底。分区重新分配时清空 engine 重新预热（只跑一个实例）。SIGTERM 时不 flush engine，只提交。
+    2026-10-22 宿主机试跑（预热 2 小时、19.5 万条 10 秒追上）：60 个 token 全部有输出，约 13 条/秒。延迟（算完 − 收到）稳定后 p50 1.9 秒、p99 5 秒——是设计决定的：等这一秒结束 + 等同市场下一条消息或 3 秒宽限 + 1 秒检查间隔；预热完成那一刻会补输出一批攒着的秒（延迟几十秒，正常）。收到 − 交易所时间中位数 −113ms，说明本机时钟仍偏慢，w32time 待调。
     回放 10-20 全天：173 万条消息 126 秒（约 1.4 万条/秒，实时只有约 20 条/秒），输出盘口指标 88.9 万条（116 个 token）、成交指标 894 条；最大 1 小时 log-odds 变化 1.67，和 gold.fct_top_of_book 同时段中间价 0.045→0.2265 一致。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
 - Airflow（用户 2026-10-20 决定：先做阶段 3，Airflow 以后再做，计划不大改）。想做的 DAG：① 每天定时 dbt build（silver/gold 是快照，现在靠手动 build 更新）② 数据质量检查（check_clob + dbt test，不达标通知用户）③ 上游新鲜度检查（可用 dbt `source freshness`；分钟级的「采集器挂了」更适合阶段 3 的 Grafana 告警）④ bronze 小文件合并 ⑤ 每天抽几个市场和官方 Data API 对账（用户同意把核对脚本改成定期任务）。之后还可放阶段 5 的每晚回测、阶段 6 的历史回填。待定：通知渠道（邮件 / Telegram / Discord）。Airflow 只调度批处理，常驻服务仍由 Docker 管。
+- 流处理框架（用户 2026-10-22 决定：阶段 3 先全用 Python，以后可能换）：讨论过 Flink（要加 JobManager/TaskManager 集群、PyFlink 调试痛苦，订单簿只能用 DataStream API 写）和 Kafka Streams（Java 库、无集群、状态存 Kafka changelog、自带 exactly-once，计划文档里本就列为阶段 3 可选加分项）；也提过 Python 的 Quix Streams。以后替换的做法：新程序用新 consumer group 读 pm.raw.clob、先写测试 topic（如 pm.metrics.book.v2）和 Python 版并行对比，一致后切换正式 topic，下游不用改——前提是 pm.metrics.* 的消息格式写成文档固定下来。Python engine 保留作阶段 4/5 复用和参考实现。
 - Spark：用户同意当前数据量（clob 约 150MB/天）不需要，DuckDB 更快；放到阶段 5 以后（如阶段 6 大量历史回填 + S3）再考虑。
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
 - 阶段 6：历史价格（prices history，可回填几个月，用于更长回测；一次性批量数据应直接写 Parquet，不走 Kafka）；带钱包地址的成交明细、持仓大户、排行榜、按钱包的交易历史/已平仓持仓/盈亏曲线（胜率需自己从已平仓持仓算），用于大户/聪明钱分析。

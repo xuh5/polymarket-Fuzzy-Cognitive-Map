@@ -4,7 +4,14 @@
 """
 from confluent_kafka.admin import AdminClient, AlterConfigOpType, ConfigEntry, ConfigResource, NewTopic, ResourceType
 
-from pmdata.common.config import KAFKA_BOOTSTRAP, TOPIC_CLOB, TOPIC_COMMENTS, TOPIC_MARKETS
+from pmdata.common.config import (
+    KAFKA_BOOTSTRAP,
+    TOPIC_CLOB,
+    TOPIC_COMMENTS,
+    TOPIC_MARKETS,
+    TOPIC_METRICS_BOOK,
+    TOPIC_METRICS_TRADES,
+)
 
 SEVEN_DAYS_MS = str(7 * 24 * 60 * 60 * 1000)
 
@@ -14,6 +21,9 @@ TOPICS = [
     (TOPIC_CLOB,     3, {"retention.ms": SEVEN_DAYS_MS}),  # 订单簿+成交，保留 7 天
     # 评论：key 是评论 ID，每条评论只留最新版本、永久保留（重启时读一遍就知道哪些存过）
     (TOPIC_COMMENTS, 3, {"cleanup.policy": "compact", "retention.ms": None}),
+    # 阶段 3 实时指标（key 是市场 ID，和 pm.raw.clob 一致）；算错了可以从 raw 重算，保留 7 天就够
+    (TOPIC_METRICS_BOOK,   3, {"retention.ms": SEVEN_DAYS_MS}),
+    (TOPIC_METRICS_TRADES, 3, {"retention.ms": SEVEN_DAYS_MS}),
 ]
 
 
