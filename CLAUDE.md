@@ -25,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 坑：通过 SSH 远程执行 docker pull 会报凭据错误（Windows 凭据管理器在 SSH 会话中不可用）。
   镜像必须由用户在台式机本地执行 docker compose pull；其他 docker 命令可以远程执行。
 - `data/`、`*.parquet`、`.env`、`*.docx` 不进 Git。
-- GitHub：**公开仓库** https://github.com/xuh5/polymarket-Fuzzy-Cognitive-Map（2026-10-22 创建，remote `origin`，分支 master；名字以后可能改）。公开的，提交前确认没有密码等敏感内容。README.md 是英文、面向外部读者，项目内容变了要同步更新。gh 登录令牌用 `--insecure-storage` 存在 %APPDATA%\GitHub CLI\hosts.yml（SSH 会话读不到 Windows 凭据管理器）。
+- GitHub：**公开仓库** https://github.com/xuh5/polymarket-Fuzzy-Cognitive-Map（2026-10-22 创建，remote `origin`，分支 master；名字以后可能改）。公开的，提交前确认没有密码等敏感内容。README.md 是英文、面向外部读者，项目内容变了要同步更新。gh 登录令牌用 `--insecure-storage` 存在 %APPDATA%\GitHub CLI\hosts.yml（SSH 会话读不到 Windows 凭据管理器）；git push 也走 gh 的令牌（已执行 `gh auth setup-git`）。
 
 ## 常用命令
 
