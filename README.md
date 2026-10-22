@@ -1,0 +1,87 @@
+# Polymarket Real-Time Market Data Pipeline
+
+A Kafka-based system that collects live order book, trade, and comment data from [Polymarket](https://polymarket.com) prediction markets (tech/AI category). It archives raw events for replay, rebuilds full order books in memory, computes real-time metrics, and serves them on a Grafana dashboard.
+
+Everything runs on one machine with Docker Compose. Python 3.12 throughout.
+
+> **Status:** phases 0–3 are done (ingestion, archive and batch models, real-time metrics and dashboard). Paper trading and replay backtesting are next. Real-money trading is out of scope.
+
+## Architecture
+
+```
+ Polymarket APIs                     Kafka (KRaft, single node)             Consumers
+ ───────────────                     ──────────────────────────             ─────────
+ Gamma REST (markets) ──fetch──────▶ pm.raw.markets   (compacted) ──┬──▶ archiver ──▶ Parquet (bronze) ──▶ dbt-duckdb (silver / gold)
+ CLOB WebSocket ────────collect────▶ pm.raw.clob      (7 days)    ──┼──▶ metrics ───▶ pm.metrics.book / pm.metrics.trades
+ Comments REST ─────────poll───────▶ pm.raw.comments  (compacted) ──┘                     │
+                                                                                          ▼
+                                                                    pg-sink (upsert) ──▶ Postgres ──▶ Grafana
+```
+
+| Layer | What it does | Code |
+|---|---|---|
+| Ingestion | Pulls the market catalog every hour; streams order book snapshots, price-level changes, and trades over WebSocket; polls comments. Handles reconnects, gap markers, and dynamic resubscription. | `src/pmdata/ingest/` |
+| Archive (bronze) | Consumes all raw topics and writes Hive-partitioned Parquet files. Offsets are committed only after a file is fully written. | `src/pmdata/archive/` |
+| Batch models | dbt-duckdb: staging models unpack JSON and deduplicate (silver); a star schema of `dim_markets`, `dim_tokens`, `fct_trades`, and `fct_top_of_book` (gold). 80 dbt tests. | `dbt/` |
+| Order book | Pure-logic L2 order book rebuild from Kafka events. It does no I/O, so live processing and historical replay share the same code. | `src/pmdata/book/` |
+| Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). | `src/pmdata/metrics/` |
+| Serving | Idempotent upsert into Postgres; Grafana dashboard provisioned from files. | `src/pmdata/sink/`, `grafana/` |
+
+## Design choices
+
+- **Raw events stored unchanged.** Every message is wrapped in an envelope (`source`, `received_at`, connection ID and sequence number) with the original payload untouched. All transformation happens downstream, so anything can be recomputed from the archive.
+- **Partitioned by market ID.** One `price_change` message usually updates both the Yes and No tokens of a market. Keying by market keeps all events for a market in one partition, in order.
+- **Event time, not processing time.** Metrics use exchange timestamps. A second (or minute) is closed when a later message arrives for the same market. Live runs and replays produce identical output.
+- **Delivery guarantees without a streaming framework.** State is in memory. On restart, the metrics service replays the last 24 hours to rebuild it, and only emits output from its last committed offset onward. Every stage commits offsets only after its output is durable (at-least-once). The Postgres sink upserts by primary key, so duplicates are harmless.
+- **Gaps are explicit.** After each reconnect, the collector writes a `gap` marker per market. Downstream consumers invalidate that market's order book until the next snapshot arrives.
+
+## Validation and results
+
+| Check | Result |
+|---|---|
+| Ingestion soak test (27 h, unattended) | 1.97M messages, 0 duplicates, 99.998% coverage; one server-side disconnect, recovered in 1.6 s |
+| Archived trades vs. official Data API | 253 / 253 trades matched by transaction hash |
+| Gold tables vs. independent Python recomputation | 12 markets, identical row by row |
+| Rebuilt order book vs. exchange-reported best bid/ask (5-day replay) | 10.2M comparisons, 99.998% match; the rest traced to one stale REST snapshot |
+| Rebuilt order book vs. official REST snapshots (10 live rounds) | 582 / 584 books identical at every level (99.66%); 2 mismatched levels from a same-millisecond update |
+| Storage | Raw JSON to Parquet (zstd) is about 8.9× smaller (~88 bytes per event) |
+| End-to-end latency, exchange to Postgres | p50 2.1 s, p99 5.6 s (±0.3 s clock error) |
+
+Most of the latency is a deliberate trade-off. Each token emits at most once per second, after the second has closed, with a 3-second grace period. This avoids publishing half-applied states when the exchange splits one update across several messages.
+
+## Running it
+
+Requirements: Docker, Python 3.12.
+
+```bash
+# 1. Start Kafka and create topics
+docker compose up -d kafka kafka-ui
+python -m venv .venv && .venv/Scripts/activate        # macOS/Linux: source .venv/bin/activate
+pip install -e ".[dev,dbt]"
+python scripts/create_topics.py
+
+# 2. Create a .env file with POSTGRES_PASSWORD=... and GRAFANA_ADMIN_PASSWORD=...
+
+# 3. Start all services
+docker compose up -d
+
+# 4. Batch models (run from dbt/)
+cd dbt && PYTHONUTF8=1 dbt build
+
+# Tests and lint
+pytest && ruff check .
+```
+
+Grafana runs at `localhost:3000` and Kafka UI at `localhost:8080`.
+
+## Tech stack
+
+Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · PostgreSQL 17 · Grafana 12 · Docker Compose · pytest · ruff
+
+## Roadmap
+
+- Paper trading engine: strategy interface, simulated taker fills with fees, slippage, and latency; positions and P&L
+- Replay and backtesting on archived data with the same strategy code
+- Scheduled batch jobs (Airflow), possibly porting metrics to Kafka Streams or Flink for comparison
+
+Project notes and the decision log are in [`CLAUDE.md`](CLAUDE.md) (in Chinese).

@@ -22,3 +22,6 @@ dbt/target/
 dbt/logs/
 dbt/dbt_packages/
 dbt/.user.yml
+
+# 计划文档（含个人信息，只留在本机，不上传）
+*.docx
