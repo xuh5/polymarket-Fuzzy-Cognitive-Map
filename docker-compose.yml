@@ -98,5 +98,19 @@ services:
     command: python -m pmdata.archive.archiver
     logging: *logging
 
+  # 一直运行：读 pm.raw.clob 重建订单簿、算实时指标，写 pm.metrics.book / pm.metrics.trades
+  # 启动时先往回重放 24 小时预热（约 170 万条，一两分钟），之后才开始输出
+  metrics:
+    build: .
+    image: polymarket-app
+    container_name: metrics
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+    command: python -m pmdata.metrics.run
+    logging: *logging
+
 volumes:
   kafka-data:
