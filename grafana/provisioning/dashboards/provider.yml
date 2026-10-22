@@ -1,0 +1,9 @@
+# 从 /var/lib/grafana/dashboards（挂载的 grafana/dashboards/）加载看板 JSON
+apiVersion: 1
+providers:
+  - name: polymarket
+    folder: Polymarket
+    type: file
+    allowUiUpdates: true      # 网页上可以临时改，但改动不会写回文件；要保留就导出 JSON 覆盖文件
+    options:
+      path: /var/lib/grafana/dashboards

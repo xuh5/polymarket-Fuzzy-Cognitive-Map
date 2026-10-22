@@ -112,5 +112,56 @@ services:
     command: python -m pmdata.metrics.run
     logging: *logging
 
+  # 看板用的数据库。密码在 .env（不进 Git），compose 自动读取
+  postgres:
+    image: postgres:17.6
+    container_name: postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"                  # 宿主机程序 / 调试用
+    environment:
+      POSTGRES_USER: pm
+      POSTGRES_DB: pm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    logging: *logging
+
+  # 一直运行：读 pm.metrics.* 和 pm.raw.markets，upsert 进 Postgres（数据库提交后才提交 offset）
+  pg-sink:
+    build: .
+    image: polymarket-app
+    container_name: pg-sink
+    restart: unless-stopped
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      PG_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: python -m pmdata.sink.pg_writer
+    logging: *logging
+
+  # 看板：数据源和看板都写成文件放在 grafana/ 下（provisioning），重建容器不会丢
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"                  # 网页界面，VS Code 端口转发后访问 localhost:3000
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # 数据源配置文件里用 $POSTGRES_PASSWORD 引用
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    logging: *logging
+
 volumes:
   kafka-data:
+  pg-data:
+  grafana-data:

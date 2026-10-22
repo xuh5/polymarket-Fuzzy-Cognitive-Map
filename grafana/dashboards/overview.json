@@ -1,0 +1,370 @@
+{
+  "uid": "pm-overview",
+  "title": "Polymarket 实时指标",
+  "tags": [
+    "polymarket"
+  ],
+  "timezone": "utc",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "market",
+        "label": "市场",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "pm-postgres"
+        },
+        "refresh": 2,
+        "query": "select t.question as __text, t.market_id as __value from tokens t where t.outcome_index = 1 and t.market_id in (select distinct market_id from metrics_book where second > now() - interval '1 hour') order by t.question",
+        "definition": "tokens（最近 1 小时有数据的市场）",
+        "sort": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "数据新鲜度（距最新一条指标）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select extract(epoch from now() - max(computed_at)) as \"秒\" from metrics_book where second > now() - interval '1 day'"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "description": "超过 30 秒变红：采集器 / metrics / pg-sink 可能有一个停了"
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "异动榜（Yes 的 log-odds 变化，按 60 分钟绝对值排序）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 20,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select * from (\n  select distinct on (b.asset_id) t.question as \"市场\", b.mid as \"中间价\", b.spread as \"价差\",\n         b.logodds_chg_1m as \"1分钟\", b.logodds_chg_5m as \"5分钟\", b.logodds_chg_15m as \"15分钟\", b.logodds_chg_60m as \"60分钟\"\n  from metrics_book b join tokens t using (asset_id)\n  where t.outcome_index = 1 and b.second > now() - interval '5 minutes'\n  order by b.asset_id, b.second desc\n) x order by abs(\"60分钟\") desc nulls last"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {},
+      "description": "log-odds 变化：正数 = Yes 涨，绝对值越大变化越大；0.01→0.02 和 0.50→0.51 都是 1 分，但前者的 log-odds 变化大得多"
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "盘口：$market（Yes）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select b.second as time, b.best_bid as \"买一\", b.mid as \"中间价\",\n  b.best_ask as \"卖一\", b.microprice as \"加权中间价\"\nfrom metrics_book b join tokens t using (asset_id) where t.market_id = '$market' and t.outcome_index = 1 and $__timeFilter(b.second) order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "价格变化（log-odds）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select b.second as time, b.logodds_chg_1m as \"1分钟\", b.logodds_chg_15m as \"15分钟\",\n  b.logodds_chg_60m as \"60分钟\"\nfrom metrics_book b join tokens t using (asset_id) where t.market_id = '$market' and t.outcome_index = 1 and $__timeFilter(b.second) order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "价差",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select b.second as time, b.spread as \"价差\"\nfrom metrics_book b join tokens t using (asset_id) where t.market_id = '$market' and t.outcome_index = 1 and $__timeFilter(b.second) order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "盘口不平衡（正 = 买方多）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select b.second as time, b.imbalance_1 as \"前1档\", b.imbalance_5 as \"前5档\"\nfrom metrics_book b join tokens t using (asset_id) where t.market_id = '$market' and t.outcome_index = 1 and $__timeFilter(b.second) order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": -1,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "深度（中间价上下多少以内的挂单金额）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 17,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select b.second as time, b.bid_depth_1c as \"买 ±1分\", b.ask_depth_1c as \"卖 ±1分\",\n  b.bid_depth_5c as \"买 ±5分\", b.ask_depth_5c as \"卖 ±5分\"\nfrom metrics_book b join tokens t using (asset_id) where t.market_id = '$market' and t.outcome_index = 1 and $__timeFilter(b.second) order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "成交流向（每分钟份数）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select tr.minute as time,\n  sum(case when t.outcome_index = 1 then tr.buy_volume else tr.sell_volume end) as \"看涨（买 Yes / 卖 No）\",\n  -sum(case when t.outcome_index = 1 then tr.sell_volume else tr.buy_volume end) as \"看跌（卖 Yes / 买 No）\"\nfrom metrics_trades tr join tokens t using (asset_id)\nwhere tr.market_id = '$market' and $__timeFilter(tr.minute) group by 1 order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "barAlignment": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {},
+      "description": "买 No 和卖 Yes 是同一个方向，所以两个 token 的成交合在一起按 Yes 的角度看"
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "延迟（所有市场，每分钟）",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "pm-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "pm-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select date_trunc('minute', second) as time,\n  percentile_cont(0.5) within group (order by extract(epoch from received_at - exchange_ts)) as \"交易所→收到 p50\",\n  percentile_cont(0.5) within group (order by extract(epoch from inserted_at - exchange_ts)) as \"交易所→入库 p50\",\n  percentile_cont(0.99) within group (order by extract(epoch from inserted_at - exchange_ts)) as \"交易所→入库 p99\"\nfrom metrics_book where $__timeFilter(second) group by 1 order by 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "description": "交易所→收到 是网络 + 采集；之后多出来的主要是「等这一秒结束 + 宽限 3 秒」的设计延迟"
+    }
+  ]
+}
