@@ -198,7 +198,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 
   - 已完成（2026-10-22，用户同意的设计）：Postgres + Grafana。`pmdata.sink.pg_writer`（group `pm-pg-sink`，容器 pg-sink，09:48 UTC 起运行）读 pm.metrics.book / pm.metrics.trades / pm.raw.markets，每批（≤5000 条）先在批内按主键去重，再 upsert（ON CONFLICT DO UPDATE）进 metrics_book（主键 asset_id+second）、metrics_trades（asset_id+minute）、tokens（asset_id → 市场问题、Yes/No，tombstone 不删）；数据库事务提交后才提交 offset；启动时自动建表；每小时删 7 天前的数据；`inserted_at` 由数据库填，测端到端延迟。首次启动补写 2.3 万行指标 + 31.7 万条市场消息（去重成 6272 个 token），一分钟内追上。
     看板 9 个面板：数据新鲜度（>30 秒变红；真正的告警推送要等通知渠道定了再做）、异动榜（Yes 按 60 分钟 log-odds 变化绝对值排序）、选市场后看盘口/价格变化/价差/盘口不平衡/深度、成交流向（两个 token 合并成 Yes 视角：看涨 = 买 Yes + 卖 No）、延迟 p50/p99。所有面板 SQL 都在真实数据上跑过。
-  - 阶段 3 剩余：④ 验收——本地订单簿和官方 REST 快照抽查对比；延迟统计；看板实时刷新确认。
+  - 阶段 3 验收（进行中）：
+    - 看板实时刷新：用户 2026-10-22 打开看板确认。Grafana 保留密码登录（用户先要免登录又改回要密码；admin + .env 里的 GRAFANA_ADMIN_PASSWORD）。
+    - 本地订单簿 vs 官方 REST 快照：`scripts/verify_book_vs_rest.py`（同一份 BookStore，预热 24 小时追上实时，每轮 POST /books 要全部 token，拿本地「处理到快照时间戳 T 为止」的状态逐档比：该市场来了时间 > T 的消息就在处理它之前比）。2026-10-22 跑 10 轮（每分钟一轮）：能对齐的 584 个盘口 582 个完全一致（99.66%），42047 个价位 2 个不一致（99.9952%）；那 2 个是同一市场 Yes/No 镜像的同一处变化，本地最后更新时间 = T（同一毫秒），即官方快照取在这一毫秒的更新之前，是同毫秒边界问题，不是重建错误。另有 10 个盘口「官方快照比本地旧」（拿到快照时本地最后更新已 > T，盘口不能倒退，无法对齐，单独统计）。
+    - 延迟 p50/p99：看板已有；正式统计要等用户调快 w32time（本机时钟仍偏慢约 0.1 秒）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
