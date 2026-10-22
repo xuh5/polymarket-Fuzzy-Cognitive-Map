@@ -175,7 +175,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成（2026-10-20）：长期运行的服务（fetch_markets、collect_clob、collect_comments、archiver）统一用 logging（模块里 `log = logging.getLogger(...)`，入口调 `setup_logging()`）；命令行报告（select_markets、check_clob、market_24h、scripts）保留 print，因为输出就是报告本身。**三个采集容器还在跑旧代码**，下次重建镜像时用 `up -d --no-deps <服务>` 逐个换。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
-- 阶段 3（实时处理）：下一步（用户 2026-10-20 确认先做阶段 3）。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
+- 阶段 3（实时处理）完成（2026-10-22 用户验收通过）。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
   - 和阶段 2 的区别：阶段 2 的 fct_top_of_book 只有买一卖一（直接取 price_change 自带的 best_bid/best_ask），且是批量事后算；阶段 3 在内存里实时维护完整多档订单簿，阶段 4 模拟吃单算滑点要用。
   - 实时指标（用户 2026-10-21 选定）：盘口类按 token——中间价/价差、加权中间价（microprice）、盘口不平衡（前 1 档 / 前 5 档）、深度（中间价 ±1 分 / ±5 分内的美元挂单量）；成交类按市场 1 分钟窗口——成交量/成交额/笔数、主动买 vs 主动卖；数据新鲜度（距上一条消息几秒，给告警用）；多时间尺度价格变化（1/5/15/60 分钟，用对数几率 log-odds 相减，不直接用价格相减）。不做：VWAP、Yes+No 套利检查、评论热度。
     输出频率：盘口类每个 token 最多每秒一次（取这一秒最后的值，顺便避开交易所拆消息的「半步」状态）；成交类每分钟一次。
@@ -198,10 +198,11 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 
   - 已完成（2026-10-22，用户同意的设计）：Postgres + Grafana。`pmdata.sink.pg_writer`（group `pm-pg-sink`，容器 pg-sink，09:48 UTC 起运行）读 pm.metrics.book / pm.metrics.trades / pm.raw.markets，每批（≤5000 条）先在批内按主键去重，再 upsert（ON CONFLICT DO UPDATE）进 metrics_book（主键 asset_id+second）、metrics_trades（asset_id+minute）、tokens（asset_id → 市场问题、Yes/No，tombstone 不删）；数据库事务提交后才提交 offset；启动时自动建表；每小时删 7 天前的数据；`inserted_at` 由数据库填，测端到端延迟。首次启动补写 2.3 万行指标 + 31.7 万条市场消息（去重成 6272 个 token），一分钟内追上。
     看板 9 个面板：数据新鲜度（>30 秒变红；真正的告警推送要等通知渠道定了再做）、异动榜（Yes 按 60 分钟 log-odds 变化绝对值排序）、选市场后看盘口/价格变化/价差/盘口不平衡/深度、成交流向（两个 token 合并成 Yes 视角：看涨 = 买 Yes + 卖 No）、延迟 p50/p99。所有面板 SQL 都在真实数据上跑过。
-  - 阶段 3 验收（进行中）：
+  - 阶段 3 验收（2026-10-22 通过）：
     - 看板实时刷新：用户 2026-10-22 打开看板确认。Grafana 保留密码登录（用户先要免登录又改回要密码；admin + .env 里的 GRAFANA_ADMIN_PASSWORD）。
     - 本地订单簿 vs 官方 REST 快照：`scripts/verify_book_vs_rest.py`（同一份 BookStore，预热 24 小时追上实时，每轮 POST /books 要全部 token，拿本地「处理到快照时间戳 T 为止」的状态逐档比：该市场来了时间 > T 的消息就在处理它之前比）。2026-10-22 跑 10 轮（每分钟一轮）：能对齐的 584 个盘口 582 个完全一致（99.66%），42047 个价位 2 个不一致（99.9952%）；那 2 个是同一市场 Yes/No 镜像的同一处变化，本地最后更新时间 = T（同一毫秒），即官方快照取在这一毫秒的更新之前，是同毫秒边界问题，不是重建错误。另有 10 个盘口「官方快照比本地旧」（拿到快照时本地最后更新已 > T，盘口不能倒退，无法对齐，单独统计）。
-    - 延迟 p50/p99：看板已有；正式统计要等用户调快 w32time（本机时钟仍偏慢约 0.1 秒）。
+    - 延迟（用户决定不校准时钟，注明误差即可）：2026-10-22 09:50~10:23 UTC，60 个 token、2.4 万条指标。交易所→收到 p50 −149ms / p99 −64ms（负数是本机时钟慢约 0.23 秒，实际约 80ms）；收到→算完 p50 1.70s / p99 4.97s（「每秒输出一次 + 3 秒宽限」的设计等待）；算完→入库 p50 0.51s / p99 1.00s（sink 每秒一批）；**端到端 交易所→入库 p50 2.1s / p99 5.6s（时钟误差约 ±0.3 秒）**。
+      时钟：w32time 已开，但默认最长 9 小时才校准一次、慢慢拨，期间每小时慢约 0.07 秒，误差在 0～0.5 秒间摆动，不会无限扩大。要准确测「交易所→收到」再调快（MinPollInterval/MaxPollInterval 6、UpdateInterval 100）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
