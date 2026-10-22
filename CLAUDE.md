@@ -171,7 +171,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 
 - 阶段 3（实时处理）：下一步（用户 2026-10-20 确认先做阶段 3）。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
   - 和阶段 2 的区别：阶段 2 的 fct_top_of_book 只有买一卖一（直接取 price_change 自带的 best_bid/best_ask），且是批量事后算；阶段 3 在内存里实时维护完整多档订单簿，阶段 4 模拟吃单算滑点要用。
-  - 具体做哪些实时指标、怎么定义还没定（用户 2026-10-20：有待商榷），先给候选清单再由用户挑。
+  - 实时指标（用户 2026-10-21 选定）：盘口类按 token——中间价/价差、加权中间价（microprice）、盘口不平衡（前 1 档 / 前 5 档）、深度（中间价 ±1 分 / ±5 分内的美元挂单量）；成交类按市场 1 分钟窗口——成交量/成交额/笔数、主动买 vs 主动卖；数据新鲜度（距上一条消息几秒，给告警用）；多时间尺度价格变化（1/5/15/60 分钟，用对数几率 log-odds 相减，不直接用价格相减）。不做：VWAP、Yes+No 套利检查、评论热度。
+    输出频率：盘口类每个 token 最多每秒一次（取这一秒最后的值，顺便避开交易所拆消息的「半步」状态）；成交类每分钟一次。
   - 已向用户提出的拆分（2026-10-20，待下个会话拍板）：① 订单簿重建器（新 consumer group 读 pm.raw.clob；快照整份替换、price_change 改一档、gap 作废等快照；写成不依赖数据来源的纯逻辑模块，阶段 4/5 复用；验收 = 定时拉官方 REST 快照逐档对比）→ ② 实时指标（中间价、价差、盘口不平衡；成交量/热度按 1 分钟窗口）写新 topic pm.metrics.* → ③ consumer 写 Postgres + Grafana（Docker）→ ④ 延迟 p50/p99（每条指标带交易所时间/收到时间/算完时间）。
   - 用户 2026-10-21 选 A：重建器和指标放一个程序（订单簿是内存状态，按状态边界拆服务；指标与落库之间已有 pm.metrics 解耦）。
   - 2026-10-21 用户已开启 w32time（自动启动，源 time.cloudflare.com），但默认配置校正很慢（MinPollInterval 10 = 17 分钟、UpdateInterval 360000），开启后仍慢约 0.98 秒；测延迟前还要调快（待处理）。
@@ -179,6 +180,12 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     回放核对 `scripts/verify_book_replay.py`（bronze 全量 5 天、1020 万次）：本地买一卖一 vs price_change 自带的 best_bid/best_ask 不一致 189 次（0.002%），全部在 10-21 06:52 唯一一次 REST 补拉之后 4 分钟内（REST 快照时间戳比当时 WS 流还旧，之后自愈）。
     发现：交易所会把同一时刻的一次更新拆成多条消息（交易所时间戳相同），每条带的最优价都是全部改完后的；同一条消息里同一 token 有多处变化时也一样。所以按（token, 时间戳）分组比对；阶段 3 算指标时也要注意这种「半步」状态。交易所用 best_bid=0 / best_ask=1 表示该侧为空。
     按单日回放时开头没有快照，会忽略大量变化（正常）。
+  - 用户 2026-10-21 同意：指标写两个 topic `pm.metrics.book`（按 token 每秒最多一条，含价格变化）和 `pm.metrics.trades`（按 token 每分钟一条），key 都是市场 ID；时间一律用交易所时间（event time，回放结果才和实时一致），只有数据新鲜度用电脑时间；价格变化用中间价。
+  - 已完成：指标模块 `src/pmdata/metrics/engine.py`（纯逻辑，`MetricsEngine.apply(信封)` → [(topic, key, 指标)]，内部用 BookStore）+ tests/test_metrics_engine.py。
+    「这一秒/分钟结束」：同市场消息同分区有序，收到该市场更晚的消息即结束；冷门市场靠运行程序每秒 `flush(现在 − 宽限)` 兜底，回放结束调 `flush()`。别的市场的时间推进不能用来结束本市场（在别的分区，回放时分区顺序和实时不同）。
+    成交按 token 而不是按市场汇总（主动买 Yes 和主动买 No 意思相反）。WS 成交的 side = 吃单方方向：和官方 Data API taker_only 逐笔比对 869 笔全部一致。
+    log-odds 价格夹到 [0.001, 0.999]；价格变化 = logit(现在中间价) − logit(N 秒前那一刻的中间价)，没有那么早的数据时为 null。数据新鲜度（指标 9）放在运行程序里，不在 engine。
+    回放 10-20 全天：173 万条消息 126 秒（约 1.4 万条/秒，实时只有约 20 条/秒），输出盘口指标 88.9 万条（116 个 token）、成交指标 894 条；最大 1 小时 log-odds 变化 1.67，和 gold.fct_top_of_book 同时段中间价 0.045→0.2265 一致。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

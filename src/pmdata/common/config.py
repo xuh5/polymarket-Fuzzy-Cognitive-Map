@@ -8,6 +8,8 @@ KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
 TOPIC_MARKETS = "pm.raw.markets"
 TOPIC_CLOB = "pm.raw.clob"
 TOPIC_COMMENTS = "pm.raw.comments"
+TOPIC_METRICS_BOOK = "pm.metrics.book"       # 盘口类指标，按 token 每秒最多一条
+TOPIC_METRICS_TRADES = "pm.metrics.trades"   # 成交类指标，按 token 每分钟一条
 
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
