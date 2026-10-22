@@ -151,13 +151,9 @@ services:
     depends_on:
       - postgres
     ports:
-      - "127.0.0.1:3000:3000"        # 只允许本机访问（VS Code 端口转发算本机），局域网打不开，所以可以免登录
+      - "3000:3000"                  # 网页界面，VS Code 端口转发后访问 localhost:3000
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_AUTH_ANONYMOUS_ENABLED: "true"        # 免登录直接看
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin        # 免登录也能改看板
-      GF_AUTH_DISABLE_LOGIN_FORM: "true"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/overview.json   # 打开就是看板
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # 数据源配置文件里用 $POSTGRES_PASSWORD 引用
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
