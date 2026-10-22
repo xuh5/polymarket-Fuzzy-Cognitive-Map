@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 实时采集 Polymarket（科技/AI 类市场）的市场列表、订单簿/成交、评论 → Kafka → 归档 + 实时指标 → 模拟盘 → 可回放回测。
 三个目标：实战 Kafka、可回放的模拟盘、能在面试中讲清楚的简历项目。真钱交易不在本期范围（美国用户只能通过 Polymarket US 交易）。
 
-第一期全部用 Python 3.12；模拟盘只模拟主动吃单。完整的阶段计划（阶段 0–6）和验收标准见根目录的 `Polymarket 实时数据与模拟盘系统：目标与交付物.docx`。每个阶段满足验收标准后才进入下一阶段，阶段 6 的内容不提前做。
+第一期全部用 Python 3.12；模拟盘只模拟主动吃单。完整的阶段计划（阶段 0–6）和验收标准见根目录的 `Polymarket 实时数据与模拟盘系统：目标与交付物.docx`（含个人信息，只留在本机：.gitignore 忽略 *.docx，2026-10-22 起不再跟踪，但早期提交的历史里还有）。每个阶段满足验收标准后才进入下一阶段，阶段 6 的内容不提前做。
 
 ## 与用户协作的方式
 - 用户是数据工程师，刚学完 Kafka 入门课。请用中文大白话解释，少堆术语。
@@ -24,7 +24,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Python：项目虚拟环境 .venv。运行依赖只写在 requirements.txt（固定版本，Docker 也用它）；pyproject.toml 通过 dynamic dependencies 引用它，dev 依赖（pytest、ruff）写在 pyproject 的 `[dev]` 里。
 - 坑：通过 SSH 远程执行 docker pull 会报凭据错误（Windows 凭据管理器在 SSH 会话中不可用）。
   镜像必须由用户在台式机本地执行 docker compose pull；其他 docker 命令可以远程执行。
-- `data/`、`*.parquet`、`.env` 不进 Git。
+- `data/`、`*.parquet`、`.env`、`*.docx` 不进 Git。
+- GitHub：**公开仓库** https://github.com/xuh5/polymarket-Fuzzy-Cognitive-Map（2026-10-22 创建，remote `origin`，分支 master；名字以后可能改）。公开的，提交前确认没有密码等敏感内容。README.md 是英文、面向外部读者，项目内容变了要同步更新。gh 登录令牌用 `--insecure-storage` 存在 %APPDATA%\GitHub CLI\hosts.yml（SSH 会话读不到 Windows 凭据管理器）。
 
 ## 常用命令
 
@@ -172,10 +173,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     - **发现：断线变频繁**。阶段 1 验收期 27 小时断 1 次；10-19 23:46 起到 10-20 19:40 断了 15 次（几乎都是 `ConnectionClosedError: no close frame received or sent`，1 次 30 秒无消息），每次约 1.6 秒恢复，合计缺口约 23 秒（完整率仍约 99.97%）。原因未查，算完整率指标时一起看。
       盘口来源对比（10-19）：price_change 里的最优价变化 28.9 万次 / 51 个市场，best_bid_ask 事件只有 9260 次 / 29 个市场（86% 能在前者里找到），所以不用 best_bid_ask 事件。bronze 实测：一天 price_change 177 万（98%）、best_bid_ask 9260、book 3286、成交仅 1524 笔。
   - **发现：台式机时钟漂移**。received_at − exchange_ts 的中位数呈锯齿：每小时约 −0.07 秒、一天累计约 −1.6 秒后突然跳回（被校准一次），所有事件类型偏移一致；Windows Time 服务（w32time）是 STOPPED。阶段 2 不受影响（行情用 exchange_ts）；**阶段 3 测延迟之前必须由用户在台式机用管理员 PowerShell 开启 w32time 并配置 NTP**（sc config w32time start= auto; net start w32time; w32tm /config /manualpeerlist:"time.cloudflare.com,0x9" /syncfromflags:manual /update; w32tm /resync）。
-  - 已完成（2026-10-20）：长期运行的服务（fetch_markets、collect_clob、collect_comments、archiver）统一用 logging（模块里 `log = logging.getLogger(...)`，入口调 `setup_logging()`）；命令行报告（select_markets、check_clob、market_24h、scripts）保留 print，因为输出就是报告本身。**三个采集容器还在跑旧代码**，下次重建镜像时用 `up -d --no-deps <服务>` 逐个换。CI 暂不做（还没 push 到 GitHub，用户 2026-10-19 决定）。
+  - 已完成（2026-10-20）：长期运行的服务（fetch_markets、collect_clob、collect_comments、archiver）统一用 logging（模块里 `log = logging.getLogger(...)`，入口调 `setup_logging()`）；命令行报告（select_markets、check_clob、market_24h、scripts）保留 print，因为输出就是报告本身。**三个采集容器还在跑旧代码**，下次重建镜像时用 `up -d --no-deps <服务>` 逐个换。CI 暂不做（用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
-- 阶段 3（实时处理）完成（2026-10-22 用户验收通过）。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
+- 阶段 3（实时处理）完成（2026-10-22 用户验收通过）。用户说之后目标要变（2026-10-22，尚未细说；仓库名里的 Fuzzy Cognitive Map 可能与此有关），阶段 4 开工前先问清楚。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
   - 和阶段 2 的区别：阶段 2 的 fct_top_of_book 只有买一卖一（直接取 price_change 自带的 best_bid/best_ask），且是批量事后算；阶段 3 在内存里实时维护完整多档订单簿，阶段 4 模拟吃单算滑点要用。
   - 实时指标（用户 2026-10-21 选定）：盘口类按 token——中间价/价差、加权中间价（microprice）、盘口不平衡（前 1 档 / 前 5 档）、深度（中间价 ±1 分 / ±5 分内的美元挂单量）；成交类按市场 1 分钟窗口——成交量/成交额/笔数、主动买 vs 主动卖；数据新鲜度（距上一条消息几秒，给告警用）；多时间尺度价格变化（1/5/15/60 分钟，用对数几率 log-odds 相减，不直接用价格相减）。不做：VWAP、Yes+No 套利检查、评论热度。
     输出频率：盘口类每个 token 最多每秒一次（取这一秒最后的值，顺便避开交易所拆消息的「半步」状态）；成交类每分钟一次。
