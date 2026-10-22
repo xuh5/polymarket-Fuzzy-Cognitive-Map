@@ -69,7 +69,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver` 四个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics` 五个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -191,6 +191,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     log-odds 价格夹到 [0.001, 0.999]；价格变化 = logit(现在中间价) − logit(N 秒前那一刻的中间价)，没有那么早的数据时为 null。数据新鲜度（指标 9）放在运行程序里，不在 engine。
     运行程序 `pmdata.metrics.run`（group `pm-metrics`）：启动时 offsets_for_times 往回 24 小时预热（只更新状态不输出），offset >= 上次提交位置才输出；第一次启动从当前末尾开始输出（`plan_start`）。at-least-once：producer.flush 确认后才提交；写 Kafka 失败直接退出让 Docker 重启。所有分区追上后每秒 `flush(现在 − 3 秒)` 兜底。分区重新分配时清空 engine 重新预热（只跑一个实例）。SIGTERM 时不 flush engine，只提交。
     2026-10-22 宿主机试跑（预热 2 小时、19.5 万条 10 秒追上）：60 个 token 全部有输出，约 13 条/秒。延迟（算完 − 收到）稳定后 p50 1.9 秒、p99 5 秒——是设计决定的：等这一秒结束 + 等同市场下一条消息或 3 秒宽限 + 1 秒检查间隔；预热完成那一刻会补输出一批攒着的秒（延迟几十秒，正常）。收到 − 交易所时间中位数 −113ms，说明本机时钟仍偏慢，w32time 待调。
+    **2026-10-22 09:15 UTC 起在 Docker（metrics 容器）里正式运行**：首次启动预热 211 万条 71 秒；预热期间新到的消息之后一口气补处理（那一批延迟几十秒，正常）；追上后 60 个 token 全有输出，算完 − 收到 p50 1.7 秒 / p90 4.3 秒 / p99 5.0 秒；追上后「忽略的变化」不再增长（所有盘口都可用）。
     回放 10-20 全天：173 万条消息 126 秒（约 1.4 万条/秒，实时只有约 20 条/秒），输出盘口指标 88.9 万条（116 个 token）、成交指标 894 条；最大 1 小时 log-odds 变化 1.67，和 gold.fct_top_of_book 同时段中间价 0.045→0.2265 一致。
 
 ## 以后的想法（暂不做）
