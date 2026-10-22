@@ -69,7 +69,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics` 五个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink` 六个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -82,6 +82,8 @@ docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服�
 - SSH 下 `docker compose build` 会报凭据错误：BuildKit 即使本地有基础镜像也会去 Docker Hub 查元数据。用旧版构建器 `DOCKER_BUILDKIT=0 docker build` 直接用本地基础镜像就行；换基础镜像版本时才需要用户在台式机本地构建。
 - 重建镜像后**不要**直接 `docker compose up -d`：镜像 ID 变了，compose 会重建所有用这个镜像的容器，正在跑的采集器会被重启（产生缺口）。只想动某个服务时用 `up -d --no-deps <服务名>`。
 - 想验证新镜像又不影响正在跑的容器：用别的标签构建（`-t polymarket-app:test`），再 `docker run --rm --network polymarket_default -e KAFKA_BOOTSTRAP=kafka:19092 polymarket-app:test python -m ...` 跑只读命令。
+
+另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，3000 端口，VS Code 端口转发访问，用户名 admin）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源和看板用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留）。
 
 Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），默认 `localhost:9092`（宿主机直接跑）；容器里设为 `kafka:19092`。
 
@@ -193,6 +195,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     2026-10-22 宿主机试跑（预热 2 小时、19.5 万条 10 秒追上）：60 个 token 全部有输出，约 13 条/秒。延迟（算完 − 收到）稳定后 p50 1.9 秒、p99 5 秒——是设计决定的：等这一秒结束 + 等同市场下一条消息或 3 秒宽限 + 1 秒检查间隔；预热完成那一刻会补输出一批攒着的秒（延迟几十秒，正常）。收到 − 交易所时间中位数 −113ms，说明本机时钟仍偏慢，w32time 待调。
     **2026-10-22 09:15 UTC 起在 Docker（metrics 容器）里正式运行**：首次启动预热 211 万条 71 秒；预热期间新到的消息之后一口气补处理（那一批延迟几十秒，正常）；追上后 60 个 token 全有输出，算完 − 收到 p50 1.7 秒 / p90 4.3 秒 / p99 5.0 秒；追上后「忽略的变化」不再增长（所有盘口都可用）。
     回放 10-20 全天：173 万条消息 126 秒（约 1.4 万条/秒，实时只有约 20 条/秒），输出盘口指标 88.9 万条（116 个 token）、成交指标 894 条；最大 1 小时 log-odds 变化 1.67，和 gold.fct_top_of_book 同时段中间价 0.045→0.2265 一致。
+
+  - 已完成（2026-10-22，用户同意的设计）：Postgres + Grafana。`pmdata.sink.pg_writer`（group `pm-pg-sink`，容器 pg-sink，09:48 UTC 起运行）读 pm.metrics.book / pm.metrics.trades / pm.raw.markets，每批（≤5000 条）先在批内按主键去重，再 upsert（ON CONFLICT DO UPDATE）进 metrics_book（主键 asset_id+second）、metrics_trades（asset_id+minute）、tokens（asset_id → 市场问题、Yes/No，tombstone 不删）；数据库事务提交后才提交 offset；启动时自动建表；每小时删 7 天前的数据；`inserted_at` 由数据库填，测端到端延迟。首次启动补写 2.3 万行指标 + 31.7 万条市场消息（去重成 6272 个 token），一分钟内追上。
+    看板 9 个面板：数据新鲜度（>30 秒变红；真正的告警推送要等通知渠道定了再做）、异动榜（Yes 按 60 分钟 log-odds 变化绝对值排序）、选市场后看盘口/价格变化/价差/盘口不平衡/深度、成交流向（两个 token 合并成 Yes 视角：看涨 = 买 Yes + 卖 No）、延迟 p50/p99。所有面板 SQL 都在真实数据上跑过。
+  - 阶段 3 剩余：④ 验收——本地订单簿和官方 REST 快照抽查对比；延迟统计；看板实时刷新确认。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
