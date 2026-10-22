@@ -83,7 +83,7 @@ docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服�
 - 重建镜像后**不要**直接 `docker compose up -d`：镜像 ID 变了，compose 会重建所有用这个镜像的容器，正在跑的采集器会被重启（产生缺口）。只想动某个服务时用 `up -d --no-deps <服务名>`。
 - 想验证新镜像又不影响正在跑的容器：用别的标签构建（`-t polymarket-app:test`），再 `docker run --rm --network polymarket_default -e KAFKA_BOOTSTRAP=kafka:19092 polymarket-app:test python -m ...` 跑只读命令。
 
-另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，3000 端口，VS Code 端口转发访问，用户名 admin）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源和看板用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留）。
+另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，只绑 127.0.0.1:3000，VS Code 端口转发访问；**免登录**（匿名 Admin，用户 2026-10-22 要求：本机工具不要密码），打开就是看板）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源和看板用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留）。
 
 Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），默认 `localhost:9092`（宿主机直接跑）；容器里设为 `kafka:19092`。
 
