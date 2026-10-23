@@ -212,12 +212,12 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     - 延迟（用户决定不校准时钟，注明误差即可）：2026-10-22 09:50~10:23 UTC，60 个 token、2.4 万条指标。交易所→收到 p50 −149ms / p99 −64ms（负数是本机时钟慢约 0.23 秒，实际约 80ms）；收到→算完 p50 1.70s / p99 4.97s（「每秒输出一次 + 3 秒宽限」的设计等待）；算完→入库 p50 0.51s / p99 1.00s（sink 每秒一批）；**端到端 交易所→入库 p50 2.1s / p99 5.6s（时钟误差约 ±0.3 秒）**。
       时钟：w32time 已开，但默认最长 9 小时才校准一次、慢慢拨，期间每小时慢约 0.07 秒，误差在 0～0.5 秒间摆动，不会无限扩大。要准确测「交易所→收到」再调快（MinPollInterval/MaxPollInterval 6、UpdateInterval 100）。
 
-- Airflow（阶段 3 之后、阶段 4 目标未定期间做，2026-10-23）：
+- 稳定线 ② Airflow（2026-10-23）：
   - 用户 2026-10-22 同意的方案：精简部署（LocalExecutor）、元数据放现有 postgres、第一个 DAG 每天 UTC 01:00 dbt build；一次一个 DAG，跑稳再加。
-  - 已完成：`airflow/dags/dbt_daily.py`（BashOperator 跑 `/opt/dbt-venv/bin/dbt build`；catchup=False、max_active_runs=1、失败 10 分钟后重试 1 次；dbt 的 target/日志放容器 /tmp，不写进挂载的 dbt/）。2026-10-23 08:43 用 `dags test` 跑通：97 秒，80/80 通过。**DAG 还是暂停状态，等用户在网页上打开**。
+  - 已完成：`airflow/dags/dbt_daily.py`（BashOperator 跑 `/opt/dbt-venv/bin/dbt build`；catchup=False、max_active_runs=1、失败 10 分钟后重试 1 次；dbt 的 target/日志放容器 /tmp，不写进挂载的 dbt/）。2026-10-23 08:43 用 `dags test` 跑通：97 秒，80/80 通过。用户 2026-10-23 已在网页上打开，之后每天 01:00 自动跑。
   - **DuckDB 内存（2026-10-23 踩坑）**：容器里第一次跑 dbt 爆内存（DuckDB 用到 12.6GB；还连带 9p 挂载读文件报 Cannot allocate memory），采集器等容器没受影响。二分定位：原因是 stg_markets__snapshots 每条原始 JSON 约 8KB，**每个线程解析 JSON 都占一大块内存**，DuckDB 默认 24 线程；不去重、只取 6 个字段也会爆，和去重写法无关（一度以为是「带着 value 去重」，改了模型后实测推翻，已改回）。4GB 上限下：4 线程 0.4 秒爆，2 线程 14 秒跑完；clob 模型 24 线程也没问题。解决：profiles.yml 的 memory_limit / threads 读环境变量 `DUCKDB_MEMORY_LIMIT` / `DUCKDB_THREADS`，DAG 里设 4GB / 2；宿主机默认 16GB / 24（原默认 80% = 25GB，加上 Docker 的 15.5GB 超过整机 32GB）。容器里全量 dbt build 约 2 分钟。
     另：archiver 首次启动补读积压时把 10-19 的 markets 写成了单个 7 万行、一个 row group 的文件（value 解压后 559MB），实测不是爆内存的原因；以后如做小文件合并可顺便重写。
-  - 下一步候选：监控告警（用户 2026-10-23 同意要做；Grafana 告警管实时，Airflow 管批处理失败；**待用户选通知渠道**，建议 Telegram；整机/Docker 挂了要靠外部心跳）。之后再按下面「Airflow」里的清单加 DAG。
+  - 下一步：稳定线 ① 告警推送（Grafana 告警管实时，Airflow 管批处理失败；**待用户选通知渠道**，建议 Telegram；整机/Docker 挂了要靠外部心跳）。之后再按下面「Airflow」里的清单加 DAG。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
