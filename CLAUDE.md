@@ -86,6 +86,10 @@ docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服�
 
 另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，3000 端口，VS Code 端口转发访问，用户名 admin）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源和看板用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留）。
 
+Airflow 3.3.2（2026-10-23 加入，镜像 `polymarket-airflow` = 官方 `apache/airflow:3.3.2-python3.12` + `/opt/dbt-venv` 里单独装的 dbt，见 `airflow/Dockerfile`）：精简部署 LocalExecutor，`airflow-init`（一次性：建元数据表 + admin 用户）、`airflow-apiserver`（网页，宿主机 **8081**，只绑 127.0.0.1，用户 admin / `.env` 的 AIRFLOW_ADMIN_PASSWORD）、`airflow-scheduler`（任务就在这里跑，挂了 `./dbt` 和 `./data` 到 `/opt/project/`）、`airflow-dag-processor`；不装 triggerer/redis/worker。元数据库是现有 postgres 里单独的 `airflow` 库和用户（手动建的，新环境要先建，命令见 README）。DAG 在 `airflow/dags/`（只读挂载，改了不用重建镜像）。基础镜像同样要用户在台式机本地 pull，之后 SSH 下 `DOCKER_BUILDKIT=0 docker build -t polymarket-airflow airflow/`，再 `docker compose up -d --no-deps airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor`。
+- 坑：Git Bash 里 `docker exec` 带 `/opt/...` 路径要加 `MSYS_NO_PATHCONV=1`，否则路径被改成 Windows 路径。
+- 手动跑一次 DAG（不用先打开）：`MSYS_NO_PATHCONV=1 docker exec airflow-scheduler airflow dags test dbt_daily`。
+
 Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），默认 `localhost:9092`（宿主机直接跑）；容器里设为 `kafka:19092`。
 
 ## Kafka（docker-compose.yml）
@@ -208,9 +212,16 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
     - 延迟（用户决定不校准时钟，注明误差即可）：2026-10-22 09:50~10:23 UTC，60 个 token、2.4 万条指标。交易所→收到 p50 −149ms / p99 −64ms（负数是本机时钟慢约 0.23 秒，实际约 80ms）；收到→算完 p50 1.70s / p99 4.97s（「每秒输出一次 + 3 秒宽限」的设计等待）；算完→入库 p50 0.51s / p99 1.00s（sink 每秒一批）；**端到端 交易所→入库 p50 2.1s / p99 5.6s（时钟误差约 ±0.3 秒）**。
       时钟：w32time 已开，但默认最长 9 小时才校准一次、慢慢拨，期间每小时慢约 0.07 秒，误差在 0～0.5 秒间摆动，不会无限扩大。要准确测「交易所→收到」再调快（MinPollInterval/MaxPollInterval 6、UpdateInterval 100）。
 
+- Airflow（阶段 3 之后、阶段 4 目标未定期间做，2026-10-23）：
+  - 用户 2026-10-22 同意的方案：精简部署（LocalExecutor）、元数据放现有 postgres、第一个 DAG 每天 UTC 01:00 dbt build；一次一个 DAG，跑稳再加。
+  - 已完成：`airflow/dags/dbt_daily.py`（BashOperator 跑 `/opt/dbt-venv/bin/dbt build`；catchup=False、max_active_runs=1、失败 10 分钟后重试 1 次；dbt 的 target/日志放容器 /tmp，不写进挂载的 dbt/）。2026-10-23 08:43 用 `dags test` 跑通：97 秒，80/80 通过。**DAG 还是暂停状态，等用户在网页上打开**。
+  - **DuckDB 内存（2026-10-23 踩坑）**：容器里第一次跑 dbt 爆内存（DuckDB 用到 12.6GB；还连带 9p 挂载读文件报 Cannot allocate memory），采集器等容器没受影响。二分定位：原因是 stg_markets__snapshots 每条原始 JSON 约 8KB，**每个线程解析 JSON 都占一大块内存**，DuckDB 默认 24 线程；不去重、只取 6 个字段也会爆，和去重写法无关（一度以为是「带着 value 去重」，改了模型后实测推翻，已改回）。4GB 上限下：4 线程 0.4 秒爆，2 线程 14 秒跑完；clob 模型 24 线程也没问题。解决：profiles.yml 的 memory_limit / threads 读环境变量 `DUCKDB_MEMORY_LIMIT` / `DUCKDB_THREADS`，DAG 里设 4GB / 2；宿主机默认 16GB / 24（原默认 80% = 25GB，加上 Docker 的 15.5GB 超过整机 32GB）。容器里全量 dbt build 约 2 分钟。
+    另：archiver 首次启动补读积压时把 10-19 的 markets 写成了单个 7 万行、一个 row group 的文件（value 解压后 559MB），实测不是爆内存的原因；以后如做小文件合并可顺便重写。
+  - 下一步候选：监控告警（用户 2026-10-23 同意要做；Grafana 告警管实时，Airflow 管批处理失败；**待用户选通知渠道**，建议 Telegram；整机/Docker 挂了要靠外部心跳）。之后再按下面「Airflow」里的清单加 DAG。
+
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
-- Airflow（用户 2026-10-20 决定：先做阶段 3，Airflow 以后再做，计划不大改）。想做的 DAG：① 每天定时 dbt build（silver/gold 是快照，现在靠手动 build 更新）② 数据质量检查（check_clob + dbt test，不达标通知用户）③ 上游新鲜度检查（可用 dbt `source freshness`；分钟级的「采集器挂了」更适合阶段 3 的 Grafana 告警）④ bronze 小文件合并 ⑤ 每天抽几个市场和官方 Data API 对账（用户同意把核对脚本改成定期任务）。之后还可放阶段 5 的每晚回测、阶段 6 的历史回填。待定：通知渠道（邮件 / Telegram / Discord）。Airflow 只调度批处理，常驻服务仍由 Docker 管。
+- Airflow（用户 2026-10-20 决定：先做阶段 3，Airflow 以后再做，计划不大改；2026-10-23 已部署，见上面进度）。想做的 DAG：① 每天定时 dbt build（**已完成 dbt_daily**）② 数据质量检查（check_clob + dbt test，不达标通知用户）③ 上游新鲜度检查（可用 dbt `source freshness`；分钟级的「采集器挂了」更适合阶段 3 的 Grafana 告警）④ bronze 小文件合并 ⑤ 每天抽几个市场和官方 Data API 对账（用户同意把核对脚本改成定期任务）。之后还可放阶段 5 的每晚回测、阶段 6 的历史回填。待定：通知渠道（邮件 / Telegram / Discord）。Airflow 只调度批处理，常驻服务仍由 Docker 管。
 - 流处理框架（用户 2026-10-22 决定：阶段 3 先全用 Python，以后可能换）：讨论过 Flink（要加 JobManager/TaskManager 集群、PyFlink 调试痛苦，订单簿只能用 DataStream API 写）和 Kafka Streams（Java 库、无集群、状态存 Kafka changelog、自带 exactly-once，计划文档里本就列为阶段 3 可选加分项）；也提过 Python 的 Quix Streams。以后替换的做法：新程序用新 consumer group 读 pm.raw.clob、先写测试 topic（如 pm.metrics.book.v2）和 Python 版并行对比，一致后切换正式 topic，下游不用改——前提是 pm.metrics.* 的消息格式写成文档固定下来。Python engine 保留作阶段 4/5 复用和参考实现。
 - Spark：用户同意当前数据量（clob 约 150MB/天）不需要，DuckDB 更快；放到阶段 5 以后（如阶段 6 大量历史回填 + S3）再考虑。
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。

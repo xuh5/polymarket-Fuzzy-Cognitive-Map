@@ -9,3 +9,9 @@ pmdata:
       threads: 4
       settings:
         TimeZone: UTC   # 项目里所有时间都是 UTC，显示也用 UTC
+        # 内存上限和线程数：DuckDB 默认最多用整机 80% 内存（宿主机 25GB，比去掉 Docker 的 15.5GB 后剩下的还多）、线程数 = CPU 核数（24）。
+        # Airflow 容器里用环境变量调小（见 airflow/dags/dbt_daily.py）：容器和 Kafka、采集器共用 Docker 的内存，不能让 dbt 挤掉它们。
+        # 线程数要和内存一起调：markets 每条原始 JSON 约 8KB，每个线程解析 JSON 都要占一大块内存，
+        # 实测 4GB 上限下 4 个线程 0.4 秒就爆内存，2 个线程 14 秒跑完（2026-10-23）
+        memory_limit: "{{ env_var('DUCKDB_MEMORY_LIMIT', '16GB') }}"
+        threads: "{{ env_var('DUCKDB_THREADS', '24') }}"

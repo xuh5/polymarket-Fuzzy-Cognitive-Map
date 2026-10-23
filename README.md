@@ -11,7 +11,7 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 ```
  Polymarket APIs                     Kafka (KRaft, single node)             Consumers
  ───────────────                     ──────────────────────────             ─────────
- Gamma REST (markets) ──fetch──────▶ pm.raw.markets   (compacted) ──┬──▶ archiver ──▶ Parquet (bronze) ──▶ dbt-duckdb (silver / gold)
+ Gamma REST (markets) ──fetch──────▶ pm.raw.markets   (compacted) ──┬──▶ archiver ──▶ Parquet (bronze) ──▶ dbt-duckdb (silver / gold) ◀── Airflow (daily)
  CLOB WebSocket ────────collect────▶ pm.raw.clob      (7 days)    ──┼──▶ metrics ───▶ pm.metrics.book / pm.metrics.trades
  Comments REST ─────────poll───────▶ pm.raw.comments  (compacted) ──┘                     │
                                                                                           ▼
@@ -26,6 +26,7 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 | Order book | Pure-logic L2 order book rebuild from Kafka events. It does no I/O, so live processing and historical replay share the same code. | `src/pmdata/book/` |
 | Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). | `src/pmdata/metrics/` |
 | Serving | Idempotent upsert into Postgres; Grafana dashboard provisioned from files. | `src/pmdata/sink/`, `grafana/` |
+| Orchestration | Airflow 3 (LocalExecutor) runs `dbt build` daily at 01:00 UTC, so models and tests are rebuilt on yesterday's complete data. dbt lives in its own virtualenv inside the Airflow image, and DuckDB is capped at 4 GB / 2 threads so the batch job cannot starve the live collectors. | `airflow/` |
 
 ## Design choices
 
@@ -60,28 +61,35 @@ python -m venv .venv && .venv/Scripts/activate        # macOS/Linux: source .ven
 pip install -e ".[dev,dbt]"
 python scripts/create_topics.py
 
-# 2. Create a .env file with POSTGRES_PASSWORD=... and GRAFANA_ADMIN_PASSWORD=...
+# 2. Create a .env file with POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD, and for Airflow
+#    AIRFLOW_DB_PASSWORD, AIRFLOW_ADMIN_PASSWORD, AIRFLOW_FERNET_KEY, AIRFLOW_JWT_SECRET
 
-# 3. Start all services
+# 3. Start all services. Airflow keeps its metadata in the same Postgres, so create its database first
+docker compose up -d postgres
+docker exec -i postgres psql -U pm -d pm -v pw="$AIRFLOW_DB_PASSWORD" <<'SQL'
+CREATE ROLE airflow LOGIN PASSWORD :'pw';
+CREATE DATABASE airflow OWNER airflow;
+SQL
 docker compose up -d
 
-# 4. Batch models (run from dbt/)
+# 4. Batch models: Airflow runs them daily; to run by hand (from dbt/)
 cd dbt && PYTHONUTF8=1 dbt build
 
 # Tests and lint
 pytest && ruff check .
 ```
 
-Grafana runs at `localhost:3000` and Kafka UI at `localhost:8080`.
+Grafana runs at `localhost:3000`, Kafka UI at `localhost:8080`, and Airflow at `localhost:8081`.
 
 ## Tech stack
 
-Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · PostgreSQL 17 · Grafana 12 · Docker Compose · pytest · ruff
+Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · Airflow 3 · PostgreSQL 17 · Grafana 12 · Docker Compose · pytest · ruff
 
 ## Roadmap
 
 - Paper trading engine: strategy interface, simulated taker fills with fees, slippage, and latency; positions and P&L
 - Replay and backtesting on archived data with the same strategy code
-- Scheduled batch jobs (Airflow), possibly porting metrics to Kafka Streams or Flink for comparison
+- More scheduled jobs (data quality checks, reconciliation against the official API, compaction of small Parquet files) and alerting
+- Possibly porting metrics to Kafka Streams or Flink for comparison
 
 Project notes and the decision log are in [`CLAUDE.md`](CLAUDE.md) (in Chinese).
