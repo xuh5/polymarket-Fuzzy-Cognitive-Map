@@ -1,3 +1,36 @@
+# 所有服务共用的日志设置：日志文件最大 10MB，最多留 5 个，防止日志把硬盘写满
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Airflow 各组件共用的设置（精简部署：LocalExecutor，任务直接在 scheduler 容器里跑，不需要 Redis 和 worker）
+x-airflow-common: &airflow-common
+  build: ./airflow
+  image: polymarket-airflow
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_started
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # 网页登录用 FAB（用户名 + 密码），和官方 compose 一样
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    # 元数据库（DAG 运行记录、任务状态）放在现有 postgres 的 airflow 库里，不另起数据库容器
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    # Airflow 3 里任务通过 api-server 汇报状态，各组件用同一个 JWT 密钥互相认证
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"               # 不加载几十个示例 DAG
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"  # 新 DAG 默认暂停，手动确认后再打开
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro   # 改 DAG 不用重建镜像，dag-processor 会自动重新读
+    - airflow-logs:/opt/airflow/logs        # 任务日志：scheduler 写、api-server 读给网页看，所以共用一个卷
+  logging: *logging
+
 services:
   kafka:
     image: confluentinc/cp-kafka:7.9.0
@@ -49,11 +82,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:19092   # 容器之间走内部地址
     command: python -m pmdata.ingest.fetch_markets --every 3600
-    logging: &logging
-      driver: json-file
-      options:
-        max-size: "10m"              # 日志文件最大 10MB，最多留 5 个，防止日志把硬盘写满
-        max-file: "5"
+    logging: *logging
 
   # 一直运行：WebSocket 采集订单簿/成交写 pm.raw.clob，每小时重新筛一次订阅名单
   collect-clob:
@@ -161,7 +190,56 @@ services:
       - grafana-data:/var/lib/grafana
     logging: *logging
 
+  # 一次性：建/升级 Airflow 元数据库的表、创建网页 admin 用户，做完就退出（其他 Airflow 组件等它成功后才启动）
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    restart: "no"
+    command: version                  # 官方镜像的入口脚本先按下面两个开关做完初始化，再执行 airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+
+  # 网页界面 + REST API；任务也通过它汇报状态。kafka-ui 占了 8080，宿主机用 8081，只绑本机（VS Code 端口转发访问）
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: airflow-apiserver
+    command: api-server
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # 调度器：到点创建 DAG 运行、排任务；LocalExecutor 下任务就在这个容器里执行（所以 dbt 要用的目录挂在这里）
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - airflow-logs:/opt/airflow/logs
+      # 保持 dbt/ 和 data/ 的相对位置不变，profiles.yml 里的 ../data/warehouse.duckdb 才能找到
+      - ./dbt:/opt/project/dbt
+      - ./data:/opt/project/data
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # 解析 DAG 文件（Airflow 3 起必须单独运行）
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: airflow-dag-processor
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
   kafka-data:
   pg-data:
   grafana-data:
+  airflow-logs:
