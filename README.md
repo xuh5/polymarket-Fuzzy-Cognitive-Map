@@ -25,7 +25,7 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 | Batch models | dbt-duckdb: staging models unpack JSON and deduplicate (silver); a star schema of `dim_markets`, `dim_tokens`, `fct_trades`, and `fct_top_of_book` (gold). 80 dbt tests. | `dbt/` |
 | Order book | Pure-logic L2 order book rebuild from Kafka events. It does no I/O, so live processing and historical replay share the same code. | `src/pmdata/book/` |
 | Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). | `src/pmdata/metrics/` |
-| Serving | Idempotent upsert into Postgres; Grafana dashboard provisioned from files. | `src/pmdata/sink/`, `grafana/` |
+| Serving and alerting | Idempotent upsert into Postgres; Grafana dashboard and alert rules provisioned from files. Alerts (pipeline stalled, market catalog stale) and failed Airflow tasks are sent to Discord. | `src/pmdata/sink/`, `grafana/` |
 | Orchestration | Airflow 3 (LocalExecutor) runs `dbt build` daily at 01:00 UTC, so models and tests are rebuilt on yesterday's complete data. dbt lives in its own virtualenv inside the Airflow image, and DuckDB is capped at 4 GB / 2 threads so the batch job cannot starve the live collectors. | `airflow/` |
 
 ## Design choices
@@ -63,6 +63,7 @@ python scripts/create_topics.py
 
 # 2. Create a .env file with POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD, and for Airflow
 #    AIRFLOW_DB_PASSWORD, AIRFLOW_ADMIN_PASSWORD, AIRFLOW_FERNET_KEY, AIRFLOW_JWT_SECRET
+#    and DISCORD_WEBHOOK_URL for alerts
 
 # 3. Start all services. Airflow keeps its metadata in the same Postgres, so create its database first
 docker compose up -d postgres
@@ -89,7 +90,7 @@ Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow 
 
 - Paper trading engine: strategy interface, simulated taker fills with fees, slippage, and latency; positions and P&L
 - Replay and backtesting on archived data with the same strategy code
-- More scheduled jobs (data quality checks, reconciliation against the official API, compaction of small Parquet files) and alerting
+- More scheduled jobs (data quality checks, reconciliation against the official API, compaction of small Parquet files) and an external heartbeat
 - Possibly porting metrics to Kafka Streams or Flink for comparison
 
 Project notes and the decision log are in [`CLAUDE.md`](CLAUDE.md) (in Chinese).

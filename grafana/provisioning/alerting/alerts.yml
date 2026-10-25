@@ -1,0 +1,100 @@
+# Grafana 告警：启动时自动加载（和数据源、看板一样用 provisioning，网页上改不了，要改就改这个文件再重启 grafana）
+# Discord webhook 地址在 .env 的 DISCORD_WEBHOOK_URL（谁拿到都能往频道发消息，不进 Git），compose 传进容器
+# 注意：这个文件里 $XXX 会被替换成环境变量（规则的 annotations 除外），通知模板里不要写 $
+apiVersion: 1
+
+# 发到哪：Discord 频道
+contactPoints:
+  - orgId: 1
+    name: discord
+    receivers:
+      - uid: pm-discord
+        type: discord
+        disableResolveMessage: false     # 恢复时也发一条
+        settings:
+          url: $DISCORD_WEBHOOK_URL
+          use_discord_username: false
+          title: '{{ if eq .Status "firing" }}🔴 告警{{ else }}✅ 已恢复{{ end }}：{{ .CommonLabels.alertname }}'
+          message: |-
+            {{ range .Alerts }}{{ if eq .Status "firing" }}{{ .Annotations.summary }}
+            开始于 {{ .StartsAt.Format "01-02 15:04" }} UTC{{ else }}{{ .StartsAt.Format "01-02 15:04" }} ~ {{ .EndsAt.Format "01-02 15:04" }} UTC，已恢复正常{{ end }}
+            {{ end }}
+
+# 怎么发：所有告警都发 Discord；同一条告警没恢复的话每 4 小时再提醒一次
+policies:
+  - orgId: 1
+    receiver: discord
+    group_by: ['alertname']
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+
+# 什么时候发：每分钟查一次 Postgres
+groups:
+  - orgId: 1
+    name: 数据管道
+    folder: 告警
+    interval: 1m
+    rules:
+      # 采集器 → Kafka → metrics → pg-sink → Postgres 任何一环挂了，看板指标都会停止入库。
+      # 正常每秒都有新指标（2026-10-23 统计：23 小时里相邻两次入库最长间隔 4 秒，包括 7 次断线重连）
+      - uid: pm-metrics-stale
+        title: 实时数据断了
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: pm-postgres
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              editorMode: code
+              # 一小时内一条都没有时 max 为空，按 999999 秒算（照样告警）
+              rawSql: |-
+                select coalesce(extract(epoch from now() - max(inserted_at)), 999999)::float as stale_seconds
+                from metrics_book
+                where second > now() - interval '1 hour'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [120]}
+        for: 1m                  # 超过 2 分钟没新数据、并且持续 1 分钟才发，避免一闪而过的误报
+        noDataState: Alerting
+        execErrState: Alerting   # Postgres 连不上也算
+        annotations:
+          summary: '看板指标已经 {{ with $values.A }}{{ humanizeDuration .Value }}{{ end }} 没有新数据了（正常每秒都有）。采集器 / Kafka / metrics / pg-sink / Postgres 可能有一个挂了，先看 docker compose ps 和各容器日志。'
+
+      # fetch-markets 每小时拉一次市场名录，pg-sink 写进 tokens 表时刷新 updated_at
+      - uid: pm-markets-stale
+        title: 市场名录没更新
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: pm-postgres
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              editorMode: code
+              rawSql: |-
+                select coalesce(extract(epoch from now() - max(updated_at)), 999999)::float as stale_seconds
+                from tokens
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [9000]}   # 2.5 小时（正常每小时一次）
+        for: 5m
+        noDataState: Alerting
+        execErrState: Alerting
+        annotations:
+          summary: '市场名录已经 {{ with $values.A }}{{ humanizeDuration .Value }}{{ end }} 没更新了（正常每小时一次）。fetch-markets 可能挂了或 Gamma 接口一直报错，看 docker logs fetch-markets。采集器会沿用旧的订阅名单，不影响行情采集。'

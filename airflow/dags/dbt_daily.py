@@ -9,6 +9,7 @@ from datetime import timedelta
 import pendulum
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import DAG
+from notify import discord_on_failure
 
 DBT_DIR = "/opt/project/dbt"   # compose 里把 ./dbt 挂到这里，./data 挂到 /opt/project/data
 
@@ -22,6 +23,7 @@ with DAG(
     default_args={
         "retries": 1,          # 失败（比如数据库正被别的程序占着）10 分钟后再试一次
         "retry_delay": timedelta(minutes=10),
+        "on_failure_callback": discord_on_failure,   # 重试后仍失败就发 Discord
     },
     tags=["dbt"],
 ):
