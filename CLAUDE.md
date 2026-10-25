@@ -224,7 +224,11 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 2026-10-25 验证：两条规则都在跑、状态正常；Grafana 测试接口（POST /api/alertmanager/grafana/config/api/v1/receivers/test）和 Airflow 回调各发一条测试消息到 Discord，都成功。
     真实演练（用户同意）：07:47:10 停 pg-sink → 07:50:45 触发（3 分 35 秒）→ 07:51:15 🔴 发到 Discord → 07:58:14 启动（演练脚本在 Git Bash 里用 python -c 匹配中文规则名失败，多停了 7 分钟；pg-sink 从提交的 offset 续上，Postgres 数据完整）→ 07:59:40 恢复正常 → 08:01:15 ✅ 发出。查发送结果：GET /api/alertmanager/grafana/config/api/v1/receivers 的 lastNotifyAttempt / lastNotifyAttemptError。
   - **2026-10-23 09:11 UTC Windows 自动更新重启了台式机**（MoUsoCoreWorker 发起）：42 秒后开机，约 1 分钟后所有容器自动起来（collect-clob 重启 1 次后连上 Kafka）。采集缺口 2 分 8 秒（09:11:07 → 09:13:14），看板指标断 3 分 44 秒（metrics 预热 24 小时），bronze 无重复；Airflow 10-24、10-25 的 dbt_daily 都成功。用户问能不能关机：能，所有消费者从提交的 offset 续上，但关机期间的 WebSocket 行情（订单簿变化、成交）永久缺失（评论下一轮补齐；成交可用 Data API 补）。建议用户设置 Windows 更新的「使用时段」。
-  - 待做（第二批）：外部心跳（整机/Docker/网络挂了时 Grafana 自己也挂了，要靠 healthchecks.io 之类，需用户注册）；每小时健康检查 DAG（归档在写文件、评论采集、断线次数、磁盘）。之后再按下面「Airflow」里的清单加 DAG。
+  - 待做（第二批）：外部心跳（整机/Docker/网络挂了时 Grafana 自己也挂了，要靠 healthchecks.io 之类，需用户注册；用户 2026-10-25 说「再说吧」）；每小时健康检查 DAG（归档在写文件、评论采集、断线次数、磁盘）。之后再按下面「Airflow」里的清单加 DAG。
+  - 用户 2026-10-25 说想学 Airflow：已讲过概念（DAG/Task/Operator/DAG Run/Task Instance、4 个容器分工、catchup、回调、DAG 文件顶层代码会被反复执行）和 dbt tests 的三种写法；建议拿「每小时健康检查 DAG」当练习（Claude 搭骨架、用户写关键部分，练 `a >> b` 依赖和 PythonOperator）。
+  - 用户问过关机能不能补数据：Kafka 只能让下游补「已进 Kafka 的数据」；关机期间官方能补的只有成交（Data API v2 /trades）和价格曲线（`GET https://data-api.polymarket.com/v2/prices-history`，bucket_seconds 60~86400，1 分钟粒度至少保留 7 天、5 分钟 60 天、30 分钟 90 天、3/12 小时永久，单次范围最多 15 天）；**历史订单簿官方没有任何接口**（文档明说要自己存）。补数程序还没写。
+
+- **下一次会话从这里开始（2026-10-25）**：稳定线主体已完成，剩下的都是可选小活（外部心跳、健康检查 DAG、Kafka 消费积压监控、三个采集容器换新代码）。已向用户提议研究线先做一个只读的小探索：逻辑相关市场的价格矛盾（同一事件不同阈值如估值 2T ≥ 3T、不同截止日期 10 月 ≤ 12 月、negRisk 各选项之和 ≈ 1），看违反频率、幅度、扣手续费后还剩多少。数据：订单簿只有成交量前 30 的市场，但 bronze 的 pm.raw.markets 每小时有全部约 2900 个市场的快照（payload 里带价格字段，用前先确认字段名），可做小时级分析。用户还没选「研究探索」还是「健康检查 DAG 练 Airflow」，开工前先问。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
