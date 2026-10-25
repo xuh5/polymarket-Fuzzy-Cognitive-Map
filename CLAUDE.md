@@ -222,6 +222,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - Grafana 告警用 provisioning：`grafana/provisioning/alerting/alerts.yml`（联系方式 discord + 通知策略：按 alertname 分组、没恢复每 4 小时再提醒、恢复时发 ✅ + 规则组「数据管道」每分钟查 Postgres）。规则：① 实时数据断了：metrics_book 最新 inserted_at 超过 120 秒且持续 1 分钟（10-23 统计 23 小时最长间隔 4 秒）；② 市场名录没更新：tokens 最新 updated_at 超过 2.5 小时、持续 5 分钟。两条都是查不到数据 / Postgres 连不上也告警。文件里 `$XXX` 会被替换成环境变量（annotations 除外），通知模板里别写 `$`。
   - Airflow：`airflow/dags/notify.py` 的 `discord_on_failure`，dbt_daily 的 default_args 挂 on_failure_callback（重试用完仍失败才发）。
   - 2026-10-25 验证：两条规则都在跑、状态正常；Grafana 测试接口（POST /api/alertmanager/grafana/config/api/v1/receivers/test）和 Airflow 回调各发一条测试消息到 Discord，都成功。
+    真实演练（用户同意）：07:47:10 停 pg-sink → 07:50:45 触发（3 分 35 秒）→ 07:51:15 🔴 发到 Discord → 07:58:14 启动（演练脚本在 Git Bash 里用 python -c 匹配中文规则名失败，多停了 7 分钟；pg-sink 从提交的 offset 续上，Postgres 数据完整）→ 07:59:40 恢复正常 → 08:01:15 ✅ 发出。查发送结果：GET /api/alertmanager/grafana/config/api/v1/receivers 的 lastNotifyAttempt / lastNotifyAttemptError。
   - **2026-10-23 09:11 UTC Windows 自动更新重启了台式机**（MoUsoCoreWorker 发起）：42 秒后开机，约 1 分钟后所有容器自动起来（collect-clob 重启 1 次后连上 Kafka）。采集缺口 2 分 8 秒（09:11:07 → 09:13:14），看板指标断 3 分 44 秒（metrics 预热 24 小时），bronze 无重复；Airflow 10-24、10-25 的 dbt_daily 都成功。用户问能不能关机：能，所有消费者从提交的 offset 续上，但关机期间的 WebSocket 行情（订单簿变化、成交）永久缺失（评论下一轮补齐；成交可用 Data API 补）。建议用户设置 Windows 更新的「使用时段」。
   - 待做（第二批）：外部心跳（整机/Docker/网络挂了时 Grafana 自己也挂了，要靠 healthchecks.io 之类，需用户注册）；每小时健康检查 DAG（归档在写文件、评论采集、断线次数、磁盘）。之后再按下面「Airflow」里的清单加 DAG。
 
