@@ -224,11 +224,16 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 2026-10-25 验证：两条规则都在跑、状态正常；Grafana 测试接口（POST /api/alertmanager/grafana/config/api/v1/receivers/test）和 Airflow 回调各发一条测试消息到 Discord，都成功。
     真实演练（用户同意）：07:47:10 停 pg-sink → 07:50:45 触发（3 分 35 秒）→ 07:51:15 🔴 发到 Discord → 07:58:14 启动（演练脚本在 Git Bash 里用 python -c 匹配中文规则名失败，多停了 7 分钟；pg-sink 从提交的 offset 续上，Postgres 数据完整）→ 07:59:40 恢复正常 → 08:01:15 ✅ 发出。查发送结果：GET /api/alertmanager/grafana/config/api/v1/receivers 的 lastNotifyAttempt / lastNotifyAttemptError。
   - **2026-10-23 09:11 UTC Windows 自动更新重启了台式机**（MoUsoCoreWorker 发起）：42 秒后开机，约 1 分钟后所有容器自动起来（collect-clob 重启 1 次后连上 Kafka）。采集缺口 2 分 8 秒（09:11:07 → 09:13:14），看板指标断 3 分 44 秒（metrics 预热 24 小时），bronze 无重复；Airflow 10-24、10-25 的 dbt_daily 都成功。用户问能不能关机：能，所有消费者从提交的 offset 续上，但关机期间的 WebSocket 行情（订单簿变化、成交）永久缺失（评论下一轮补齐；成交可用 Data API 补）。建议用户设置 Windows 更新的「使用时段」。
-  - 待做（第二批）：外部心跳（整机/Docker/网络挂了时 Grafana 自己也挂了，要靠 healthchecks.io 之类，需用户注册；用户 2026-10-25 说「再说吧」）；每小时健康检查 DAG（归档在写文件、评论采集、断线次数、磁盘）。之后再按下面「Airflow」里的清单加 DAG。
-  - 用户 2026-10-25 说想学 Airflow：已讲过概念（DAG/Task/Operator/DAG Run/Task Instance、4 个容器分工、catchup、回调、DAG 文件顶层代码会被反复执行）和 dbt tests 的三种写法；建议拿「每小时健康检查 DAG」当练习（Claude 搭骨架、用户写关键部分，练 `a >> b` 依赖和 PythonOperator）。
+  - 待做（第二批）：外部心跳（整机/Docker/网络挂了时 Grafana 自己也挂了，要靠 healthchecks.io 之类，需用户注册；用户 2026-10-25 说「再说吧」）。每小时健康检查 DAG 用户 2026-10-26 决定不做。
+  - 用户 2026-10-25 说想学 Airflow：已讲过概念（DAG/Task/Operator/DAG Run/Task Instance、4 个容器分工、catchup、回调、DAG 文件顶层代码会被反复执行）和 dbt tests 的三种写法。
   - 用户问过关机能不能补数据：Kafka 只能让下游补「已进 Kafka 的数据」；关机期间官方能补的只有成交（Data API v2 /trades）和价格曲线（`GET https://data-api.polymarket.com/v2/prices-history`，bucket_seconds 60~86400，1 分钟粒度至少保留 7 天、5 分钟 60 天、30 分钟 90 天、3/12 小时永久，单次范围最多 15 天）；**历史订单簿官方没有任何接口**（文档明说要自己存）。补数程序还没写。
 
-- **下一次会话从这里开始（2026-10-25）**：稳定线主体已完成，剩下的都是可选小活（外部心跳、健康检查 DAG、Kafka 消费积压监控、三个采集容器换新代码）。已向用户提议研究线先做一个只读的小探索：逻辑相关市场的价格矛盾（同一事件不同阈值如估值 2T ≥ 3T、不同截止日期 10 月 ≤ 12 月、negRisk 各选项之和 ≈ 1），看违反频率、幅度、扣手续费后还剩多少。数据：订单簿只有成交量前 30 的市场，但 bronze 的 pm.raw.markets 每小时有全部约 2900 个市场的快照（payload 里带价格字段，用前先确认字段名），可做小时级分析。用户还没选「研究探索」还是「健康检查 DAG 练 Airflow」，开工前先问。
+- 稳定线主体已完成，剩下的可选小活：外部心跳、Kafka 消费积压监控、三个采集容器换新代码。
+
+- 2026-10-26 18:52～20:16 UTC 家里断网约 84 分钟：collect-clob 自动重连、无人工干预（网络刚恢复时有几次 SSL 证书校验失败，是路由器/运营商劫持，拒绝连接是对的）；fetch-markets 那一轮整轮作废，没写错误的 tombstone。
+
+- **研究线：逻辑相关市场的价格矛盾（2026-10-26～27，已结束，脚本没留）**：用 10 天每小时市场快照（Gamma 的 bestBid/bestAsk，实测比 WS 盘口晚约 1 分钟）+ 订阅市场的秒级盘口，检查了 negRisk 选项加总（158 个事件）和截止日期/阈值梯子（176 个）。结论：没有能手动做的套利——表面矛盾要么是假象（augmented 事件选项本来不全、赢家已结算下架），要么是资金时间成本（2027 年才结算的 IPO 类年化 2～8%），要么容量只有几美元（最薄选项只挂 5～30 份），要么秒级里只存在一两秒（Fable 发布日期梯子 50 小时内倒挂共 123 秒）。
+  踩过的坑：判断某时刻「在订阅」要看最近的 gap 标记是否属于当时的连接（conn_id）；dim_tokens.outcome_index 从 1 开始（Yes=1）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
@@ -237,4 +242,4 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - Spark：用户同意当前数据量（clob 约 150MB/天）不需要，DuckDB 更快；放到阶段 5 以后（如阶段 6 大量历史回填 + S3）再考虑。
 - 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
 - 阶段 6：历史价格（prices history，可回填几个月，用于更长回测；一次性批量数据应直接写 Parquet，不走 Kafka）；带钱包地址的成交明细、持仓大户、排行榜、按钱包的交易历史/已平仓持仓/盈亏曲线（胜率需自己从已平仓持仓算），用于大户/聪明钱分析。
-- negRisk 套利候选：订阅整个 negRisk 事件的全部选项（如「谁有最好的 AI 模型」各家公司），检查各选项 Yes 价格之和是否偏离 1。偏离（扣除手续费后）可作为套利策略的候选，留到阶段 4 模拟交易时考虑。
+- negRisk 套利候选：2026-10-27 用快照查过，没有能手动做的机会（见进度里「研究线」）；要再看只能订阅整个事件的全部选项、看秒级。
