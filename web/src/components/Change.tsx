@@ -7,7 +7,7 @@ export default function Change({ points, size = 'sm' }: { points: number | null;
   return (
     <span className={`change ${dir} ${size}`}>
       {arrow && <span aria-hidden="true">{arrow}</span>}
-      {sign}{points.toFixed(1)} pts
+      {sign}{(dir === 'flat' ? Math.abs(points) : points).toFixed(1)} pts
     </span>
   )
 }

@@ -75,3 +75,26 @@ def market_tokens(conn, market_id):
         """,
         (market_id,),
     ).fetchall()
+
+
+def sparklines(conn, hours, bucket_minutes):
+    """所有市场第一个选项过去 hours 小时的走势，每 bucket_minutes 分钟取一格最后的中间价。
+
+    返回 {market_id: [[格子开始时间毫秒, 中间价], ...]}（按时间排）。首页表格每行一条小走势图，一次查完所有市场。
+    """
+    rows = conn.execute(
+        """
+        select t.market_id,
+               date_bin(make_interval(mins => %s), b.second, timestamptz '2000-01-01') as bucket,
+               (array_agg(b.mid order by b.second desc))[1] as mid
+        from metrics_book b join tokens t using (asset_id)
+        where t.outcome_index = 1 and b.second > now() - make_interval(hours => %s) and b.mid is not null
+        group by 1, 2
+        order by 1, 2
+        """,
+        (bucket_minutes, hours),
+    ).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r["market_id"], []).append([int(r["bucket"].timestamp() * 1000), r["mid"]])
+    return out

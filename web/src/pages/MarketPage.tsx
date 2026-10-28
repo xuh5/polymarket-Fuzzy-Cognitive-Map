@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { fetchBook, fetchHistory, fetchMarket } from '../api'
+import { fetchBook, fetchHistory, fetchMarket, polymarketUrl } from '../api'
 import BookLadder from '../components/BookLadder'
 import Change from '../components/Change'
 import DepthChart from '../components/DepthChart'
@@ -70,6 +70,11 @@ export default function MarketPage() {
         <div className="sub">
           {endDate(m.end_date) && <span>Ends {endDate(m.end_date)}</span>}
           {first.updated_at && <span>Updated {ago(first.updated_at)}</span>}
+          {m.slug && (
+            <a className="ext-link" href={polymarketUrl(m.slug)} target="_blank" rel="noreferrer">
+              View on Polymarket ↗
+            </a>
+          )}
         </div>
       </section>
 

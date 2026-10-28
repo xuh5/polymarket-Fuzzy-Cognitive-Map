@@ -778,3 +778,116 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
   .ladders { grid-template-columns: 1fr; }
   .market-head h1 { font-size: 22px; }
 }
+
+/* ---------- 首页打磨：小走势图、闪动、分页、外链、骨架屏 ---------- */
+.mini-spark { display: block; margin-left: auto; overflow: visible; }
+
+/* 数值变化时闪一下：浅底色 + 字色，1 秒褪掉 */
+.flash { display: inline-block; border-radius: 4px; padding: 0 2px; margin: 0 -2px; }
+.flash-up { animation: flash-up 1.2s ease-out; }
+.flash-down { animation: flash-down 1.2s ease-out; }
+
+@keyframes flash-up {
+  0% { background: var(--up-soft); color: var(--up); }
+  100% { background: transparent; }
+}
+
+@keyframes flash-down {
+  0% { background: var(--down-soft); color: var(--down); }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-up, .flash-down { animation: none; }
+}
+
+.link-col { width: 1%; padding-left: 0; text-align: center; }
+
+.ext {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.ext:hover { background: var(--bg); color: var(--accent); }
+
+.ext-link { color: var(--accent); font-weight: 500; }
+.ext-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.page-size { display: flex; align-items: center; gap: 8px; color: var(--ink-2); margin-left: auto; }
+
+.page-size select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.pages { display: flex; align-items: center; gap: 4px; }
+
+.pages button {
+  font: inherit;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.pages button:hover:not(:disabled) { background: var(--surface); border-color: var(--border); color: var(--ink); }
+.pages button.active { background: var(--ink); color: var(--surface); }
+.pages button:disabled { opacity: 0.35; cursor: default; }
+
+/* 骨架屏：灰块上有一道光扫过 */
+.skeleton {
+  display: inline-block;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #ebeae6 0%, #f4f3f0 50%, #ebeae6 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+.mover .skeleton { display: block; }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
+
+@media (max-width: 960px) {
+  .hide-md { display: none; }
+}
