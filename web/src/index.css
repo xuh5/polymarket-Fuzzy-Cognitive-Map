@@ -78,8 +78,20 @@ a { color: inherit; text-decoration: none; }
   font-weight: 500;
 }
 
-.nav a:hover,
-.nav a.active { color: var(--ink); }
+.nav a {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  border-bottom: 2px solid transparent;
+}
+
+.nav a:hover { color: var(--ink); }
+
+/* 当前页面：深色字 + 底部一条线 */
+.nav a.active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
 
 .live {
   display: inline-flex;
@@ -448,6 +460,20 @@ tr.stale td { opacity: 0.5; }
   color: var(--muted);
 }
 
+.footer-inner {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.footer-right {
+  display: flex;
+  gap: 16px;
+}
+
+.footer-right a:hover { color: var(--ink); }
+
 /* ---------- 手机 ---------- */
 @media (max-width: 720px) {
   .hero { padding: 32px 0 24px; }
@@ -457,6 +483,15 @@ tr.stale td { opacity: 0.5; }
   .controls { width: 100%; }
   th, td { padding: 10px; }
   .meter { width: 44px; }
-  .nav { gap: 14px; }
-  .header-inner { gap: 16px; }
+  .nav { gap: 12px; font-size: 14px; }
+  .header-inner { gap: 12px; }
+  .brand span.word { display: none; }
+  .live .label { display: none; }
+  .live { padding: 6px; }
+}
+
+.placeholder {
+  margin-top: 24px;
+  text-align: center;
+  padding: 48px 20px;
 }

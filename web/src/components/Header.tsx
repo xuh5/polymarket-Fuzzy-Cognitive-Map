@@ -1,3 +1,4 @@
+import { Link, NavLink } from 'react-router'
 import type { Health } from '../api'
 
 // 右上角的实时状态：最新指标 30 秒内算 Live，否则 Delayed，拿不到就是 Offline
@@ -6,9 +7,9 @@ function LiveBadge({ health, failed }: { health: Health | null; failed: boolean 
   const state = failed ? 'offline' : age == null ? 'offline' : age <= 30 ? 'live' : 'delayed'
   const label = state === 'live' ? 'Live' : state === 'delayed' ? `Delayed ${Math.round(age!)}s` : 'Offline'
   return (
-    <span className={`live ${state}`}>
+    <span className={`live ${state}`} title={label}>
       <span className="dot" aria-hidden="true" />
-      {label}
+      <span className="label">{label}</span>
     </span>
   )
 }
@@ -31,13 +32,16 @@ export default function Header({ health, failed }: { health: Health | null; fail
   return (
     <header className="site-header">
       <div className="container header-inner">
-        <a className="brand" href="/">
+        <Link className="brand" to="/">
           <Logo />
-          Depthscope
-        </a>
+          <span className="word">Depthscope</span>
+        </Link>
         <nav className="nav">
-          <a className="active" href="/">Markets</a>
-          <a href="https://github.com/xuh5/polymarket-Fuzzy-Cognitive-Map" target="_blank" rel="noreferrer">GitHub</a>
+          {/* NavLink 会给当前页面的链接加上 active 样式 */}
+          <NavLink to="/" end>Markets</NavLink>
+          <NavLink to="/signals">Signals</NavLink>
+          <NavLink to="/status">Status</NavLink>
+          <NavLink to="/about">About</NavLink>
         </nav>
         <LiveBadge health={health} failed={failed} />
       </div>
