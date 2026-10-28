@@ -1,3 +1,4 @@
+import { Link } from 'react-router'
 import type { Market } from '../api'
 import { pct, pointsChange } from '../format'
 import Change from './Change'
@@ -8,7 +9,9 @@ export default function MoverCard({ m }: { m: Market }) {
   const dir = pts == null || Math.abs(pts) < 0.05 ? 'flat' : pts > 0 ? 'up' : 'down'
   return (
     <article className="card mover">
-      <h3 className="mover-q" title={m.question}>{m.question}</h3>
+      <h3 className="mover-q" title={m.question}>
+        <Link to={`/markets/${m.market_id}`} className="stretched">{m.question}</Link>
+      </h3>
       <div className="mover-row">
         <div>
           <div className="mover-prob">{pct(m.mid)}</div>

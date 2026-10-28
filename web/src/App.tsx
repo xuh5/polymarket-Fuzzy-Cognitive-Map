@@ -3,6 +3,7 @@ import { Route, Routes } from 'react-router'
 import { fetchHealth, type Health } from './api'
 import Footer from './components/Footer'
 import Header from './components/Header'
+import MarketPage from './pages/MarketPage'
 import Markets from './pages/Markets'
 import Placeholder from './pages/Placeholder'
 
@@ -29,6 +30,7 @@ export default function App() {
       <main className="container">
         <Routes>
           <Route path="/" element={<Markets />} />
+          <Route path="/markets/:marketId" element={<MarketPage />} />
           <Route path="/signals" element={
             <Placeholder title="Signals"
               description="Markets with suspicious depth, and recent alerts for large moves and liquidity drops." />

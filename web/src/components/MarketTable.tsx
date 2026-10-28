@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router'
 import type { Market } from '../api'
 import { ago, cents, endDate, pct, pointsChange, secondsAgo } from '../format'
 import Change from './Change'
@@ -18,6 +19,7 @@ type Row = { m: Market; stale: boolean; pts: number | null }
 export default function MarketTable({ markets }: { markets: Market[] }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('moves')
+  const navigate = useNavigate()
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -69,9 +71,13 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
           </thead>
           <tbody>
             {rows.map(({ m, stale, pts }) => (
-              <tr key={m.market_id} className={stale ? 'stale' : ''}>
+              // 整行可点，进市场详情页；问题文字是真正的链接（键盘、右键新标签页都能用）
+              <tr key={m.market_id} className={`clickable${stale ? ' stale' : ''}`}
+                onClick={() => navigate(`/markets/${m.market_id}`)}>
                 <td>
-                  <div className="q">{m.question}</div>
+                  <Link className="q" to={`/markets/${m.market_id}`} onClick={(e) => e.stopPropagation()}>
+                    {m.question}
+                  </Link>
                   <div className="sub">
                     {m.outcome !== 'Yes' && <span className="chip">{m.outcome}</span>}
                     {endDate(m.end_date) && <span>Ends {endDate(m.end_date)}</span>}

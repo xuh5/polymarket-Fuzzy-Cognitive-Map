@@ -54,3 +54,24 @@ def market_history(conn, market_id, minutes, bucket_seconds=1):
         """,
         (bucket_seconds, market_id, minutes),
     ).fetchall()
+
+
+def market_tokens(conn, market_id):
+    """某个市场的所有选项（按 outcome_index 排），每个带最新一条盘口指标（过去 24 小时没有就是 null）。"""
+    return conn.execute(
+        """
+        select t.market_id, t.question, t.slug, t.end_date, t.outcome, t.outcome_index, t.asset_id,
+               b.mid, b.best_bid, b.best_ask, b.spread, b.microprice, b.imbalance_5,
+               b.bid_depth_5c, b.ask_depth_5c, b.logodds_chg_60m, b.second as updated_at
+        from tokens t
+        left join lateral (
+            select * from metrics_book b
+            where b.asset_id = t.asset_id and b.second > now() - interval '24 hours'
+            order by b.second desc
+            limit 1
+        ) b on true
+        where t.market_id = %s
+        order by t.outcome_index
+        """,
+        (market_id,),
+    ).fetchall()

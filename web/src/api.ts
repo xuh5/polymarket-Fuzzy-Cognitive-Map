@@ -42,3 +42,44 @@ export const fetchMarkets = () => getJson<Market[]>('/api/markets')
 export const fetchHealth = () => getJson<Health>('/api/health')
 export const fetchHistory = (marketId: string, minutes: number, bucketSeconds: number) =>
   getJson<HistoryPoint[]>(`/api/markets/${marketId}/history?minutes=${minutes}&bucket_seconds=${bucketSeconds}`)
+
+export interface OutcomeStats {
+  outcome: string
+  outcome_index: number
+  asset_id: string
+  mid: number | null
+  best_bid: number | null
+  best_ask: number | null
+  spread: number | null
+  microprice: number | null
+  imbalance_5: number | null
+  bid_depth_5c: number | null
+  ask_depth_5c: number | null
+  logodds_chg_60m: number | null
+  updated_at: string | null
+}
+
+export interface MarketDetail {
+  market_id: string
+  question: string
+  slug: string | null
+  end_date: string | null
+  outcomes: OutcomeStats[]
+}
+
+// 一档：[价格, 份数]。bids 价高在前，asks 价低在前
+export type Level = [number, number]
+
+export interface Book {
+  asset_id: string
+  outcome: string
+  available: boolean
+  exchange_ts: number | null
+  written_at: string | null
+  bids: Level[]
+  asks: Level[]
+}
+
+export const fetchMarket = (marketId: string) => getJson<MarketDetail>(`/api/markets/${marketId}`)
+export const fetchBook = (marketId: string, outcomeIndex: number) =>
+  getJson<Book>(`/api/markets/${marketId}/book?outcome_index=${outcomeIndex}`)

@@ -37,3 +37,13 @@ export function endDate(iso: string | null): string | null {
 export function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 }
+
+// 美元金额，大数用 k / M
+export function usd(x: number | null): string {
+  if (x == null) return '—'
+  if (Math.abs(x) >= 1e6) return `$${(x / 1e6).toFixed(1)}M`
+  if (Math.abs(x) >= 1e4) return `$${(x / 1e3).toFixed(1)}k`
+  return `$${x.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+
+export const shares = (x: number) => x.toLocaleString('en-US', { maximumFractionDigits: 0 })
