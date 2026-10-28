@@ -5,6 +5,7 @@ import { ago, cents, endDate, pct, pointsChange, secondsAgo } from '../format'
 import BookPreview, { PREVIEW_WIDTH } from './BookPreview'
 import Change from './Change'
 import Flash from './Flash'
+import HoverRing, { type HoverRingHandle } from './HoverRing'
 
 type SortKey = 'moves' | 'prob' | 'name'
 const SORTS: { key: SortKey; label: string }[] = [
@@ -44,9 +45,11 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
   const timer = useRef<number | undefined>(undefined)        // 等着弹出
   const closeTimer = useRef<number | undefined>(undefined)   // 等着关掉
   const mouseX = useRef(0)
+  const ring = useRef<HoverRingHandle>(null)
 
   const keepPreview = () => window.clearTimeout(closeTimer.current)
   const closePreviewSoon = () => {
+    ring.current?.stop()
     window.clearTimeout(timer.current)
     window.clearTimeout(closeTimer.current)
     closeTimer.current = window.setTimeout(() => setPreview(null), CLOSE_GRACE_MS)
@@ -58,8 +61,10 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
     if (preview?.id === m.market_id) return     // 从小窗口回到同一个名字：保持打开
     window.clearTimeout(timer.current)
     mouseX.current = e.clientX
+    ring.current?.start(e.clientX, e.clientY)
     const el = e.currentTarget
     timer.current = window.setTimeout(() => {
+      ring.current?.stop(true)
       const r = el.getBoundingClientRect()
       // 优先放在鼠标左边，左边放不下就放右边
       const leftSide = mouseX.current - 16 - PREVIEW_WIDTH
@@ -141,7 +146,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
                   {/* 只有鼠标停在市场名字上才弹迷你订单簿，不是整行 */}
                   <Link className="q" to={`/markets/${m.market_id}`} onClick={(e) => e.stopPropagation()}
                     onPointerEnter={(e) => openPreviewSoon(e, m)}
-                    onPointerMove={(e) => { mouseX.current = e.clientX }}
+                    onPointerMove={(e) => { mouseX.current = e.clientX; ring.current?.move(e.clientX, e.clientY) }}
                     onPointerLeave={closePreviewSoon}>
                     {m.question}
                   </Link>
@@ -181,6 +186,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
         </table>
       </div>
 
+      <HoverRing ref={ring} durationMs={HOVER_DELAY_MS} />
       {preview && (
         <BookPreview marketId={preview.id} outcome={preview.outcome} x={preview.x} y={preview.y}
           onEnter={keepPreview} onLeave={closePreviewSoon} />
