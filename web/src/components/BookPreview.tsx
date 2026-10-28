@@ -5,9 +5,11 @@ import { usePolling } from '../usePolling'
 const ROWS = 6
 export const PREVIEW_WIDTH = 260
 
-// 鼠标在首页表格某一行停一会儿弹出的迷你订单簿：卖盘在上（最优价靠中间）、买盘在下，中间一行是价差和中间价
-export default function BookPreview({ marketId, outcome, x, y }: {
+// 鼠标在首页表格某一行停一会儿弹出的迷你订单簿：卖盘在上（最优价靠中间）、买盘在下，中间一行是价差和中间价。
+// 鼠标可以移进来，在里面时不会消失
+export default function BookPreview({ marketId, outcome, x, y, onEnter, onLeave }: {
   marketId: string; outcome: string; x: number; y: number
+  onEnter: () => void; onLeave: () => void
 }) {
   const book = usePolling(() => fetchBook(marketId, 1), 2000, marketId)
   const b = book.data
@@ -44,7 +46,8 @@ export default function BookPreview({ marketId, outcome, x, y }: {
   }
 
   return (
-    <div className="card book-preview" style={{ left: x, top: y, width: PREVIEW_WIDTH }} role="tooltip">
+    <div className="card book-preview" style={{ left: x, top: y, width: PREVIEW_WIDTH }} role="dialog"
+      aria-label={`Order book preview, ${outcome}`} onPointerEnter={onEnter} onPointerLeave={onLeave}>
       <div className="pv-head">
         <span>Order book · {outcome}</span>
         <span className="muted">Price / Shares</span>

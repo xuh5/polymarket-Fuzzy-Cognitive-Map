@@ -19,6 +19,8 @@ const STALE_SECONDS = 15 * 60
 
 // 鼠标在一行上停多久才弹出迷你订单簿（太短的话扫过表格时会一直弹）
 const HOVER_DELAY_MS = 2000
+// 离开那一行后小窗口多留一会儿，够把鼠标移进小窗口里
+const CLOSE_GRACE_MS = 150
 const PREVIEW_HALF_HEIGHT = 170   // 卡片大约一半高，用来让它不超出窗口上下边
 
 type Row = { m: Market; stale: boolean; pts: number | null }
@@ -39,16 +41,21 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
 
   // 悬停弹出的迷你订单簿。只响应鼠标（pointerType === 'mouse'）：手机上手指点屏幕不会弹
   const [preview, setPreview] = useState<{ id: string; outcome: string; x: number; y: number } | null>(null)
-  const timer = useRef<number | undefined>(undefined)
+  const timer = useRef<number | undefined>(undefined)        // 等着弹出
+  const closeTimer = useRef<number | undefined>(undefined)   // 等着关掉
   const mouseX = useRef(0)
 
-  const closePreview = () => {
+  const keepPreview = () => window.clearTimeout(closeTimer.current)
+  const closePreviewSoon = () => {
     window.clearTimeout(timer.current)
-    setPreview(null)
+    window.clearTimeout(closeTimer.current)
+    closeTimer.current = window.setTimeout(() => setPreview(null), CLOSE_GRACE_MS)
   }
 
   const openPreviewSoon = (e: React.PointerEvent<HTMLTableRowElement>, m: Market) => {
     if (e.pointerType !== 'mouse') return
+    keepPreview()
+    if (preview?.id === m.market_id) return     // 从小窗口回到同一行：保持打开
     window.clearTimeout(timer.current)
     mouseX.current = e.clientX
     const row = e.currentTarget
@@ -69,7 +76,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
   }, [preview])
-  useEffect(() => () => window.clearTimeout(timer.current), [])
+  useEffect(() => () => { window.clearTimeout(timer.current); window.clearTimeout(closeTimer.current) }, [])
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -132,7 +139,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
                 onClick={() => navigate(`/markets/${m.market_id}`)}
                 onPointerEnter={(e) => openPreviewSoon(e, m)}
                 onPointerMove={(e) => { mouseX.current = e.clientX }}
-                onPointerLeave={closePreview}>
+                onPointerLeave={closePreviewSoon}>
                 <td>
                   <Link className="q" to={`/markets/${m.market_id}`} onClick={(e) => e.stopPropagation()}>
                     {m.question}
@@ -173,7 +180,10 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
         </table>
       </div>
 
-      {preview && <BookPreview marketId={preview.id} outcome={preview.outcome} x={preview.x} y={preview.y} />}
+      {preview && (
+        <BookPreview marketId={preview.id} outcome={preview.outcome} x={preview.x} y={preview.y}
+          onEnter={keepPreview} onLeave={closePreviewSoon} />
+      )}
 
       {rows.length > 0 && (
         <div className="pager">
