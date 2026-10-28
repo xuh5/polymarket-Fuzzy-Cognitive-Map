@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { polymarketUrl, type Market } from '../api'
 import { ago, cents, endDate, pct, pointsChange, secondsAgo } from '../format'
+import BookPreview, { PREVIEW_WIDTH } from './BookPreview'
 import Change from './Change'
 import Flash from './Flash'
 
@@ -15,6 +16,10 @@ const PAGE_SIZES = [10, 25, 50]
 
 // 超过这么久没更新的市场（多半已移出订阅名单）淡化显示
 const STALE_SECONDS = 15 * 60
+
+// 鼠标在一行上停多久才弹出迷你订单簿（太短的话扫过表格时会一直弹）
+const HOVER_DELAY_MS = 2000
+const PREVIEW_HALF_HEIGHT = 170   // 卡片大约一半高，用来让它不超出窗口上下边
 
 type Row = { m: Market; stale: boolean; pts: number | null }
 
@@ -31,6 +36,40 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
   const [pageSize, setPageSize] = useState(25)
   const [page, setPage] = useState(1)
   const navigate = useNavigate()
+
+  // 悬停弹出的迷你订单簿。只响应鼠标（pointerType === 'mouse'）：手机上手指点屏幕不会弹
+  const [preview, setPreview] = useState<{ id: string; outcome: string; x: number; y: number } | null>(null)
+  const timer = useRef<number | undefined>(undefined)
+  const mouseX = useRef(0)
+
+  const closePreview = () => {
+    window.clearTimeout(timer.current)
+    setPreview(null)
+  }
+
+  const openPreviewSoon = (e: React.PointerEvent<HTMLTableRowElement>, m: Market) => {
+    if (e.pointerType !== 'mouse') return
+    window.clearTimeout(timer.current)
+    mouseX.current = e.clientX
+    const row = e.currentTarget
+    timer.current = window.setTimeout(() => {
+      const r = row.getBoundingClientRect()
+      // 优先放在鼠标左边，左边放不下就放右边
+      const leftSide = mouseX.current - 16 - PREVIEW_WIDTH
+      const x = leftSide >= 8 ? leftSide : mouseX.current + 16
+      const y = Math.min(Math.max(r.top + r.height / 2, PREVIEW_HALF_HEIGHT), window.innerHeight - PREVIEW_HALF_HEIGHT)
+      setPreview({ id: m.market_id, outcome: m.outcome, x, y })
+    }, HOVER_DELAY_MS)
+  }
+
+  // 卡片是固定在窗口上的，页面一滚动位置就对不上了，直接关掉；离开页面时清掉计时器
+  useEffect(() => {
+    if (!preview) return
+    const onScroll = () => setPreview(null)
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [preview])
+  useEffect(() => () => window.clearTimeout(timer.current), [])
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -90,7 +129,10 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
             {shown.map(({ m, stale, pts }) => (
               // 整行可点，进市场详情页；问题文字是真正的链接（键盘、右键新标签页都能用）
               <tr key={m.market_id} className={`clickable${stale ? ' stale' : ''}`}
-                onClick={() => navigate(`/markets/${m.market_id}`)}>
+                onClick={() => navigate(`/markets/${m.market_id}`)}
+                onPointerEnter={(e) => openPreviewSoon(e, m)}
+                onPointerMove={(e) => { mouseX.current = e.clientX }}
+                onPointerLeave={closePreview}>
                 <td>
                   <Link className="q" to={`/markets/${m.market_id}`} onClick={(e) => e.stopPropagation()}>
                     {m.question}
@@ -130,6 +172,8 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
           </tbody>
         </table>
       </div>
+
+      {preview && <BookPreview marketId={preview.id} outcome={preview.outcome} x={preview.x} y={preview.y} />}
 
       {rows.length > 0 && (
         <div className="pager">

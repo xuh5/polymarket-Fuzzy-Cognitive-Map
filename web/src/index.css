@@ -889,3 +889,67 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 @media (max-width: 960px) {
   .hide-md { display: none; }
 }
+
+/* ---------- 悬停弹出的迷你订单簿 ---------- */
+.book-preview {
+  position: fixed;
+  z-index: 20;
+  transform: translateY(-50%);
+  padding: 10px 12px;
+  pointer-events: none;            /* 不挡鼠标，移动时下面的行照常响应 */
+  box-shadow: 0 10px 30px rgba(17, 17, 16, 0.12), 0 2px 6px rgba(17, 17, 16, 0.06);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  animation: pv-in 0.14s ease-out;
+}
+
+@keyframes pv-in {
+  from { opacity: 0; transform: translateY(-50%) scale(0.97); }
+  to { opacity: 1; transform: translateY(-50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .book-preview { animation: none; }
+}
+
+.pv-head {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+
+.pv-row {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 6px;
+  line-height: 1.5;
+}
+
+.pv-bar {
+  position: absolute;
+  right: 0;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 3px;
+  z-index: 0;
+}
+
+.pv-row.ask .pv-bar { background: var(--down-soft); }
+.pv-row.bid .pv-bar { background: var(--up-soft); }
+.pv-price, .pv-size { position: relative; z-index: 1; }
+.pv-row.ask .pv-price { color: var(--down); font-weight: 600; }
+.pv-row.bid .pv-price { color: var(--up); font-weight: 600; }
+
+.pv-mid {
+  margin: 4px 0;
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-2);
+  text-align: center;
+}
+
+.pv-empty { padding: 24px 0; text-align: center; color: var(--muted); }
