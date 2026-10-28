@@ -2,13 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# Polymarket 实时数据与模拟盘系统
+# Polymarket 订单簿分析平台
 
 ## 目标
-实时采集 Polymarket（科技/AI 类市场）的市场列表、订单簿/成交、评论 → Kafka → 归档 + 实时指标 → 模拟盘 → 可回放回测。
-三个目标：实战 Kafka、可回放的模拟盘、能在面试中讲清楚的简历项目。真钱交易不在本期范围（美国用户只能通过 Polymarket US 交易）。
+实时采集 Polymarket（科技/AI 类市场）的市场列表、订单簿/成交、评论 → Kafka → 归档 + 实时指标 → 给外部用户用的网站：标出可疑深度、回放价格大跳动、推送重要提醒，并公开展示管道健康状况。
+两个目标：实战 Kafka / 流式数据管道、能在面试中讲清楚的简历项目。不交易、不收费、不再分发原始数据，网站不做用户账户。
 
-第一期全部用 Python 3.12；模拟盘只模拟主动吃单。完整的阶段计划（阶段 0–6）和验收标准见根目录的 `Polymarket 实时数据与模拟盘系统：目标与交付物.docx`（含个人信息，只留在本机：.gitignore 忽略 *.docx，2026-10-22 起不再跟踪，但早期提交的历史里还有）。每个阶段满足验收标准后才进入下一阶段，阶段 6 的内容不提前做。
+计划书：根目录 `polymarket-orderbook-platform.md`（2026-10-28 起替代原计划）。五个模块：1 L2 实时重构（深度图 + 滑点计算）、2 假深度识别（按价位标出可疑金额，不分辨是装样子还是正常做市——行情里没有挂单人信息）、3 跳动回放、4 提醒推送（公开 Discord/Telegram 频道 + 固定规则）、5 管道健康看板（公开 Status 页）。开发顺序 1 → 5 → 3 → 2 → 4。
+
+原计划（阶段 0–6，见本机 `Polymarket 实时数据与模拟盘系统：目标与交付物.docx`，含个人信息，只留在本机：.gitignore 忽略 *.docx，2026-10-22 起不再跟踪，但早期提交的历史里还有）：阶段 0–3 已完成（见下面进度）；**阶段 4（模拟交易）、5（回放回测）2026-10-28 删除**——新平台不交易，策略/持仓/盈亏用不上；其中有用的两块并入新计划：模拟吃单算滑点 → 模块 1 的滑点计算器，按快照 + 增量回放 → 模块 3。全部用 Python 3.12（网站前端除外）。
 
 ## 与用户协作的方式
 - 用户是数据工程师，刚学完 Kafka 入门课。请用中文大白话解释，少堆术语。
@@ -64,7 +66,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/ingest/`：阶段 1 采集（fetch_markets、select_markets、collect_clob、collect_comments）。
 - `src/pmdata/quality/`：数据质量检查。
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。
-- `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续阶段按同样方式加 `metrics/`、`sim/`、`replay/`。
+- `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续模块按同样方式在 `src/pmdata/` 下加子包（如网站后端 `api/`）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
 - `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
@@ -180,8 +182,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 已完成（2026-10-20）：长期运行的服务（fetch_markets、collect_clob、collect_comments、archiver）统一用 logging（模块里 `log = logging.getLogger(...)`，入口调 `setup_logging()`）；命令行报告（select_markets、check_clob、market_24h、scripts）保留 print，因为输出就是报告本身。**三个采集容器还在跑旧代码**，下次重建镜像时用 `up -d --no-deps <服务>` 逐个换。CI 暂不做（用户 2026-10-19 决定）。
   - 按 medallion 架构命名（用户 2026-10-19 确认）：bronze = Parquet 原始归档（data/bronze/），silver/gold = dbt 模型（存在 DuckDB 文件里）。
 
-- 阶段 3（实时处理）完成（2026-10-22 用户验收通过）。用户说之后目标要变（2026-10-22，尚未细说；仓库名里的 Fuzzy Cognitive Map 可能与此有关），阶段 4 开工前先问清楚。
-- **之后的安排（用户 2026-10-22 决定）**：阶段 4、5（模拟交易、回测）暂缓——用户认可简单盘口指标 + 主动吃单不可能盈利，项目方向要重新想。两条线并行：
+- 阶段 3（实时处理）完成（2026-10-22 用户验收通过）。用户说之后目标要变（2026-10-22，尚未细说；仓库名里的 Fuzzy Cognitive Map 可能与此有关）。2026-10-28 已定为订单簿分析平台，见进度末尾。
+- **之后的安排（用户 2026-10-22 决定）**：阶段 4、5（模拟交易、回测）暂缓（2026-10-28 删除）——用户认可简单盘口指标 + 主动吃单不可能盈利，项目方向要重新想。两条线并行：
   - 稳定（Claude 做，每步让用户确认）：① 告警推送（Grafana 告警：容器挂了 / 数据断了通知到手机，待用户定渠道：邮件 / Telegram / Discord）② Airflow（每天 dbt build、数据质量检查，出问题通知）③ Schema Registry 等新目标需要新 topic 时再加。
   - 研究方向（用户主导，Claude 用已有 bronze/gold 数据做快速探索）：讨论过的方向——预测市场的收益来源是判断比市场准、相关市场之间的不一致（如不同截止日期、negRisk 各选项之和）、消息在相关市场间传导的延迟；Fuzzy Cognitive Map 可用来建模市场/事件之间的影响关系。可做的探索：市场间 log-odds 变化的相关性和领先滞后、逻辑相关市场的价格矛盾、新闻冲击下的反应时差。开工前用户须先在台式机开启 w32time 时间同步（见上面「台式机时钟漂移」）。
   - 和阶段 2 的区别：阶段 2 的 fct_top_of_book 只有买一卖一（直接取 price_change 自带的 best_bid/best_ask），且是批量事后算；阶段 3 在内存里实时维护完整多档订单簿，阶段 4 模拟吃单算滑点要用。
@@ -235,11 +237,15 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - **研究线：逻辑相关市场的价格矛盾（2026-10-26～27，已结束，脚本没留）**：用 10 天每小时市场快照（Gamma 的 bestBid/bestAsk，实测比 WS 盘口晚约 1 分钟）+ 订阅市场的秒级盘口，检查了 negRisk 选项加总（158 个事件）和截止日期/阈值梯子（176 个）。结论：没有能手动做的套利——表面矛盾要么是假象（augmented 事件选项本来不全、赢家已结算下架），要么是资金时间成本（2027 年才结算的 IPO 类年化 2～8%），要么容量只有几美元（最薄选项只挂 5～30 份），要么秒级里只存在一两秒（Fable 发布日期梯子 50 小时内倒挂共 123 秒）。
   踩过的坑：判断某时刻「在订阅」要看最近的 gap 标记是否属于当时的连接（conn_id）；dim_tokens.outcome_index 从 1 开始（Yes=1）。
 
+- **2026-10-28 方向确定：订单簿分析平台**（计划书 `polymarket-orderbook-platform.md`，用户写的，同天按讨论改过：模块 2 只标可疑不分辨做市、模块 4 不做账户）。原阶段 4/5 删除（见「目标」）。
+  - 可行性（同天用 10-24～26 数据实测）：行情只给每个价位的汇总量，没有订单 ID 和挂单人。6407 笔成交里 96% 能在 ±2 秒内找到同 token、挂单方一侧、同价位的「量变少」（时间差中位数 21ms，很少同一毫秒，要按时间窗口配）；其中 56% 减少量正好等于成交量，其余是同时有撤单或补挂混在一起。同期价位量减少 563 万次，对得上成交的只有 6 千多次，其余都是撤单——所以「挂了又撤、没怎么成交」按价位能算出来。做不到的：一个价位上是一张单还是几张单、同一时刻撤了又挂（净变化为 0）、谁挂的。
+  - 提给用户、还没定的计划书修改：加「网站骨架与部署」一块（API + 前端 + 对外开放，计划书里没写）；模块 2 开发前先用 bronze 探索这种现象多不多；key 保持按市场 ID（计划书写的是 token ID）；模块 3 先不上 ClickHouse/TimescaleDB/S3，用 bronze + 定期快照，慢了再说；模块 5 现有 Grafana/Postgres 告警继续用，延迟要写明是哪一段。
+  - 下一步：模块 1 还缺深度图和滑点计算，都要上网站，所以先搭网站骨架。架构已和用户讨论过：新加 `src/pmdata/api/`（FastAPI，只读 Postgres + 读 pm.metrics.* 用 WebSocket 推给浏览器；每个实例自己的 group、不提交 offset，是广播不是分摊）、前端放根目录 `web/`；网站不读 warehouse.duckdb（单写者、每天 01:00 dbt 重建时锁住）；pm.metrics.* 格式要固定（`common/schemas.py`）。实时推送用轮询 Postgres 还是读 Kafka、放台式机（Cloudflare Tunnel）还是上云，还没定。订阅市场数量以后再扩。
+
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
-- Airflow（用户 2026-10-20 决定：先做阶段 3，Airflow 以后再做，计划不大改；2026-10-23 已部署，见上面进度）。想做的 DAG：① 每天定时 dbt build（**已完成 dbt_daily**）② 数据质量检查（check_clob + dbt test，不达标通知用户）③ 上游新鲜度检查（可用 dbt `source freshness`；分钟级的「采集器挂了」更适合阶段 3 的 Grafana 告警）④ bronze 小文件合并 ⑤ 每天抽几个市场和官方 Data API 对账（用户同意把核对脚本改成定期任务）。之后还可放阶段 5 的每晚回测、阶段 6 的历史回填。通知渠道：Discord（2026-10-25 定）。Airflow 只调度批处理，常驻服务仍由 Docker 管。
-- 流处理框架（用户 2026-10-22 决定：阶段 3 先全用 Python，以后可能换）：讨论过 Flink（要加 JobManager/TaskManager 集群、PyFlink 调试痛苦，订单簿只能用 DataStream API 写）和 Kafka Streams（Java 库、无集群、状态存 Kafka changelog、自带 exactly-once，计划文档里本就列为阶段 3 可选加分项）；也提过 Python 的 Quix Streams。以后替换的做法：新程序用新 consumer group 读 pm.raw.clob、先写测试 topic（如 pm.metrics.book.v2）和 Python 版并行对比，一致后切换正式 topic，下游不用改——前提是 pm.metrics.* 的消息格式写成文档固定下来。Python engine 保留作阶段 4/5 复用和参考实现。
-- Spark：用户同意当前数据量（clob 约 150MB/天）不需要，DuckDB 更快；放到阶段 5 以后（如阶段 6 大量历史回填 + S3）再考虑。
-- 结算结果（resolution state 接口）：阶段 4/5 算盈亏必须知道哪边赢，作为阶段 4 的一部分做。WS 的 market_resolved 只覆盖订阅的市场。
-- 阶段 6：历史价格（prices history，可回填几个月，用于更长回测；一次性批量数据应直接写 Parquet，不走 Kafka）；带钱包地址的成交明细、持仓大户、排行榜、按钱包的交易历史/已平仓持仓/盈亏曲线（胜率需自己从已平仓持仓算），用于大户/聪明钱分析。
+- Airflow（用户 2026-10-20 决定：先做阶段 3，Airflow 以后再做，计划不大改；2026-10-23 已部署，见上面进度）。想做的 DAG：① 每天定时 dbt build（**已完成 dbt_daily**）② 数据质量检查（check_clob + dbt test，不达标通知用户）③ 上游新鲜度检查（可用 dbt `source freshness`；分钟级的「采集器挂了」更适合阶段 3 的 Grafana 告警）④ bronze 小文件合并 ⑤ 每天抽几个市场和官方 Data API 对账（用户同意把核对脚本改成定期任务）。之后还可放历史回填、模块 3 的定期快照之类的批处理。通知渠道：Discord（2026-10-25 定）。Airflow 只调度批处理，常驻服务仍由 Docker 管。
+- 流处理框架（用户 2026-10-22 决定：阶段 3 先全用 Python，以后可能换）：讨论过 Flink（要加 JobManager/TaskManager 集群、PyFlink 调试痛苦，订单簿只能用 DataStream API 写）和 Kafka Streams（Java 库、无集群、状态存 Kafka changelog、自带 exactly-once，计划文档里本就列为阶段 3 可选加分项）；也提过 Python 的 Quix Streams。以后替换的做法：新程序用新 consumer group 读 pm.raw.clob、先写测试 topic（如 pm.metrics.book.v2）和 Python 版并行对比，一致后切换正式 topic，下游不用改——前提是 pm.metrics.* 的消息格式写成文档固定下来。Python engine 保留作回放复用和参考实现。新计划书模块 2 也写了 Flink / Kafka Streams。
+- Spark：用户同意当前数据量（clob 约 150MB/天）不需要，DuckDB 更快；大量历史回填 + S3 时再考虑。
+- 原阶段 6 的想法：历史价格（prices history，可回填几个月；一次性批量数据应直接写 Parquet，不走 Kafka）；带钱包地址的成交明细、持仓大户、排行榜、按钱包的交易历史/已平仓持仓/盈亏曲线（胜率需自己从已平仓持仓算），用于大户/聪明钱分析。
 - negRisk 套利候选：2026-10-27 用快照查过，没有能手动做的机会（见进度里「研究线」）；要再看只能订阅整个事件的全部选项、看秒级。

@@ -1,10 +1,12 @@
-# Polymarket Real-Time Market Data Pipeline
+# Polymarket Real-Time Order Book Analytics
 
 A Kafka-based system that collects live order book, trade, and comment data from [Polymarket](https://polymarket.com) prediction markets (tech/AI category). It archives raw events for replay, rebuilds full order books in memory, computes real-time metrics, and serves them on a Grafana dashboard.
 
+The goal is a public order book analytics site built on this pipeline: flag suspicious depth, replay large price moves, push alerts for important events, and show pipeline health on a public status page. No trading, no fees, no redistribution of raw data, no user accounts. Not affiliated with Polymarket.
+
 Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 
-> **Status:** phases 0–3 are done (ingestion, archive and batch models, real-time metrics and dashboard). Paper trading and replay backtesting are next. Real-money trading is out of scope.
+> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is next. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
 
 ## Architecture
 
@@ -88,8 +90,11 @@ Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow 
 
 ## Roadmap
 
-- Paper trading engine: strategy interface, simulated taker fills with fees, slippage, and latency; positions and P&L
-- Replay and backtesting on archived data with the same strategy code
+- Website: depth chart and a slippage calculator ("how far would a $X order move the price")
+- Public status page: latency, throughput, consumer lag, resyncs
+- Price-move replay: scrub the order book before and after a large move, with a one-line verdict (eaten by trades, pulled, or a thin book pushed by small orders)
+- Suspicious depth: per price level, flag large orders that are repeatedly placed and pulled with little trading, and score each market
+- Alerts for large moves, suspicious depth, and liquidity drops, pushed to a public Discord or Telegram channel
 - More scheduled jobs (data quality checks, reconciliation against the official API, compaction of small Parquet files) and an external heartbeat
 - Possibly porting metrics to Kafka Streams or Flink for comparison
 
