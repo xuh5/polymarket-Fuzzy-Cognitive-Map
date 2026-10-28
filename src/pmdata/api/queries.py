@@ -1,0 +1,51 @@
+"""网站后端用到的 SQL，全部只读 Postgres（pg-sink 写进去的 metrics_book / metrics_trades / tokens）。
+
+每个函数接收一个数据库连接（行格式是 dict），返回 list[dict] 或 dict，直接给 FastAPI 转成 JSON。
+市场的价格一律用第一个选项（outcome_index = 1，二元市场是 Yes）的 token。
+"""
+
+
+def latest_metric(conn):
+    """最近一条盘口指标的时间和距今秒数，健康检查用。"""
+    return conn.execute(
+        "select max(computed_at) as latest, extract(epoch from now() - max(computed_at)) as age_seconds "
+        "from metrics_book where second > now() - interval '1 day'"
+    ).fetchone()
+
+
+def list_markets(conn, hours):
+    """过去 hours 小时有盘口指标的市场，每个市场带第一个选项的最新盘口。
+
+    tokens 表里有几千个 token，但只有订阅的那几十个有指标：对每个 token 用主键索引（asset_id, second）
+    取最新一条，比扫一遍 metrics_book 再去重快得多。
+    """
+    return conn.execute(
+        """
+        select t.market_id, t.question, t.slug, t.outcome, t.end_date, t.asset_id,
+               b.mid, b.best_bid, b.best_ask, b.spread, b.logodds_chg_60m, b.second as updated_at
+        from tokens t
+        join lateral (
+            select * from metrics_book b
+            where b.asset_id = t.asset_id and b.second > now() - make_interval(hours => %s)
+            order by b.second desc
+            limit 1
+        ) b on true
+        where t.outcome_index = 1
+        order by t.question
+        """,
+        (hours,),
+    ).fetchall()
+
+
+def market_history(conn, market_id, minutes):
+    """某个市场第一个选项过去 minutes 分钟的逐秒盘口（只有盘口变了的秒才有行）。"""
+    return conn.execute(
+        """
+        select b.second, b.best_bid, b.best_ask, b.mid, b.microprice
+        from metrics_book b join tokens t using (asset_id)
+        where t.market_id = %s and t.outcome_index = 1
+          and b.second > now() - make_interval(mins => %s)
+        order by b.second
+        """,
+        (market_id, minutes),
+    ).fetchall()

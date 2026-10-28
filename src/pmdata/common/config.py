@@ -23,5 +23,8 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 PG_DSN = (f"host={os.environ.get('PG_HOST', 'localhost')} port=5432 dbname=pm user=pm "
           f"password={os.environ.get('POSTGRES_PASSWORD', '')}")
 
+# 网站后端允许哪些网页来调用（逗号分隔）；默认是本机前端开发服务器的地址
+API_CORS_ORIGINS = os.environ.get("API_CORS_ORIGINS", "http://localhost:5173").split(",")
+
 # 归档的 Parquet 文件放在这里（宿主机默认是项目下的 data/，容器里由 docker-compose 设成挂载进来的目录）
 DATA_DIR = Path(os.environ.get("PM_DATA_DIR", "data"))
