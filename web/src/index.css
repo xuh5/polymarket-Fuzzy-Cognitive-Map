@@ -780,20 +780,18 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 }
 
 /* ---------- 首页打磨：小走势图、闪动、分页、外链、骨架屏 ---------- */
-.mini-spark { display: block; margin-left: auto; overflow: visible; }
-
-/* 数值变化时闪一下：浅底色 + 字色，1 秒褪掉 */
-.flash { display: inline-block; border-radius: 4px; padding: 0 2px; margin: 0 -2px; }
-.flash-up { animation: flash-up 1.2s ease-out; }
-.flash-down { animation: flash-down 1.2s ease-out; }
+/* 数值变化时闪一下：底色 + 字色，停 0.4 秒再慢慢褪掉（共 2 秒） */
+.flash { display: inline-block; border-radius: 4px; padding: 0 4px; margin: 0 -4px; }
+.flash-up { animation: flash-up 2s ease-out; }
+.flash-down { animation: flash-down 2s ease-out; }
 
 @keyframes flash-up {
-  0% { background: var(--up-soft); color: var(--up); }
+  0%, 20% { background: #bfe8cd; color: var(--up); }
   100% { background: transparent; }
 }
 
 @keyframes flash-down {
-  0% { background: var(--down-soft); color: var(--down); }
+  0%, 20% { background: #f6cbc6; color: var(--down); }
   100% { background: transparent; }
 }
 

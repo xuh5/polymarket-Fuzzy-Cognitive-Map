@@ -27,7 +27,6 @@ export function SkeletonTable({ rows = 8 }: { rows?: number }) {
             <tr key={i}>
               <td><SkeletonBlock w="70%" /><div style={{ height: 6 }} /><SkeletonBlock w="30%" h={10} /></td>
               <td className="num"><SkeletonBlock w={50} /></td>
-              <td className="num hide-sm"><SkeletonBlock w={96} h={24} /></td>
               <td className="num hide-sm"><SkeletonBlock w={90} /></td>
               <td className="num"><SkeletonBlock w={60} /></td>
             </tr>

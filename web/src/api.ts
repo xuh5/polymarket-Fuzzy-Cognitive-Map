@@ -84,9 +84,5 @@ export const fetchMarket = (marketId: string) => getJson<MarketDetail>(`/api/mar
 export const fetchBook = (marketId: string, outcomeIndex: number) =>
   getJson<Book>(`/api/markets/${marketId}/book?outcome_index=${outcomeIndex}`)
 
-// 每个市场 24 小时走势：[格子开始时间毫秒, 中间价]
-export type Sparklines = Record<string, [number, number][]>
-export const fetchSparklines = () => getJson<Sparklines>('/api/sparklines?hours=24&bucket_minutes=30')
-
 // Polymarket 上这个市场的页面（/market/<slug> 会自动跳到所属事件下的正确网址）
 export const polymarketUrl = (slug: string) => `https://polymarket.com/market/${slug}`

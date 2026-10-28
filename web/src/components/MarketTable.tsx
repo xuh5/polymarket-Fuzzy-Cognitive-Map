@@ -1,10 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { polymarketUrl, type Market, type Sparklines } from '../api'
+import { polymarketUrl, type Market } from '../api'
 import { ago, cents, endDate, pct, pointsChange, secondsAgo } from '../format'
 import Change from './Change'
 import Flash from './Flash'
-import MiniSpark from './MiniSpark'
 
 type SortKey = 'moves' | 'prob' | 'name'
 const SORTS: { key: SortKey; label: string }[] = [
@@ -26,7 +25,7 @@ function pageList(page: number, pages: number): (number | '…')[] {
   return [1, ...(near[0] > 2 ? ['…' as const] : []), ...near, ...(near.at(-1)! < pages - 1 ? ['…' as const] : []), pages]
 }
 
-export default function MarketTable({ markets, sparks }: { markets: Market[]; sparks: Sparklines }) {
+export default function MarketTable({ markets }: { markets: Market[] }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('moves')
   const [pageSize, setPageSize] = useState(25)
@@ -81,7 +80,6 @@ export default function MarketTable({ markets, sparks }: { markets: Market[]; sp
             <tr>
               <th>Market</th>
               <th className="num">Probability</th>
-              <th className="num hide-sm">24h</th>
               <th className="num hide-sm">Bid / Ask</th>
               <th className="num hide-md">Spread</th>
               <th className="num">1h change</th>
@@ -109,7 +107,6 @@ export default function MarketTable({ markets, sparks }: { markets: Market[]; sp
                     <span style={{ width: `${(m.mid ?? 0) * 100}%` }} />
                   </div>
                 </td>
-                <td className="num hide-sm"><MiniSpark points={sparks[m.market_id]} /></td>
                 <td className="num hide-sm">
                   <Flash value={m.best_bid}>{cents(m.best_bid)}</Flash>
                   <span className="muted"> / </span>
@@ -128,7 +125,7 @@ export default function MarketTable({ markets, sparks }: { markets: Market[]; sp
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="empty">No markets match “{query}”.</td></tr>
+              <tr><td colSpan={6} className="empty">No markets match “{query}”.</td></tr>
             )}
           </tbody>
         </table>

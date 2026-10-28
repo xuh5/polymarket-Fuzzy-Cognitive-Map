@@ -141,16 +141,3 @@ def test_book_redis_down_503():
     client, _ = client_with_redis(TOKENS, FakeRedis(fail=True))
     assert client.get("/api/markets/0xM/book").status_code == 503
 
-
-def test_sparklines_grouped_and_cached():
-    from pmdata.api import app as app_module
-    app_module.sparkline_cache.items.clear()
-    rows = [{"market_id": "0xA", "bucket": datetime(2026, 10, 28, 9, 0, tzinfo=UTC), "mid": 0.4},
-            {"market_id": "0xA", "bucket": datetime(2026, 10, 28, 9, 30, tzinfo=UTC), "mid": 0.5},
-            {"market_id": "0xB", "bucket": datetime(2026, 10, 28, 9, 0, tzinfo=UTC), "mid": 0.9}]
-    client, conn = client_with(rows)
-    j = client.get("/api/sparklines").json()
-    assert j["0xA"] == [[1793178000000, 0.4], [1793179800000, 0.5]]
-    assert list(j) == ["0xA", "0xB"]
-    client.get("/api/sparklines")
-    assert len(conn.calls) == 1          # 第二次走缓存，没查数据库

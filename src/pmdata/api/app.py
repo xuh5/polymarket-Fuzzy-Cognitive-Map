@@ -8,8 +8,6 @@
 """
 import argparse
 import json
-import threading
-import time
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -53,28 +51,6 @@ def get_redis():
     return redis_client
 
 
-class TTLCache:
-    """进程内的小缓存：同样的查询 ttl 秒内直接返回上次的结果。用在每个访客都一样、算一次要几百毫秒的接口上。"""
-
-    def __init__(self, ttl):
-        self.ttl = ttl
-        self.lock = threading.Lock()   # def 接口在线程池里跑，可能同时进来
-        self.items = {}
-
-    def get(self, key, compute):
-        with self.lock:
-            hit = self.items.get(key)
-            if hit and hit[0] > time.monotonic():
-                return hit[1]
-        value = compute()
-        with self.lock:
-            self.items[key] = (time.monotonic() + self.ttl, value)
-        return value
-
-
-sparkline_cache = TTLCache(60)
-
-
 # 每个请求从连接池借一个连接，请求结束自动还回去
 Conn = Annotated[Connection, Depends(get_conn)]
 Redis = Annotated[redis.Redis, Depends(get_redis)]
@@ -89,13 +65,6 @@ def health(conn: Conn):
 @app.get("/api/markets")
 def markets(conn: Conn, hours: Annotated[int, Query(ge=1, le=168)] = 24):
     return queries.list_markets(conn, hours)
-
-
-@app.get("/api/sparklines")
-def sparklines(conn: Conn, hours: Annotated[int, Query(ge=1, le=168)] = 24,
-               bucket_minutes: Annotated[int, Query(ge=1, le=240)] = 30):
-    """所有市场的小走势图数据（首页表格用），缓存 60 秒。"""
-    return sparkline_cache.get((hours, bucket_minutes), lambda: queries.sparklines(conn, hours, bucket_minutes))
 
 
 @app.get("/api/markets/{market_id}/history")

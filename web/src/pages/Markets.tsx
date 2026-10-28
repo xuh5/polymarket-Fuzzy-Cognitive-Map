@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchMarkets, fetchSparklines, type Market } from '../api'
+import { fetchMarkets, type Market } from '../api'
 import MarketTable from '../components/MarketTable'
 import MoverCard from '../components/MoverCard'
 import { SkeletonBlock, SkeletonMovers, SkeletonTable } from '../components/Skeleton'
 import { pointsChange, secondsAgo } from '../format'
-import { usePolling } from '../usePolling'
 
 const REFRESH_MS = 5000
 const MOVERS = 4
@@ -15,8 +14,6 @@ export default function Markets() {
   const [markets, setMarkets] = useState<Market[]>([])
   const [failed, setFailed] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  // 表格里的 24 小时小走势图：后端缓存 60 秒，这边也 60 秒拉一次
-  const sparks = usePolling(fetchSparklines, 60000, 'sparks')
 
   useEffect(() => {
     const load = () =>
@@ -89,7 +86,7 @@ export default function Markets() {
         </section>
       )}
 
-      {markets.length > 0 && <MarketTable markets={markets} sparks={sparks.data ?? {}} />}
+      {markets.length > 0 && <MarketTable markets={markets} />}
     </>
   )
 }
