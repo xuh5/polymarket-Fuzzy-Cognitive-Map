@@ -1,0 +1,39 @@
+// 页面上数字和时间的显示格式
+
+const clamp = (p: number) => Math.min(0.999, Math.max(0.001, p))
+const logit = (p: number) => Math.log(p / (1 - p))
+const sigmoid = (x: number) => 1 / (1 + Math.exp(-x))
+
+// 概率，如 7.9%
+export const pct = (p: number | null) => (p == null ? '—' : `${(p * 100).toFixed(1)}%`)
+
+// 价格按美分显示（Polymarket 的习惯：0.073 美元 = 7.3¢）
+export const cents = (p: number | null) => (p == null ? '—' : `${(p * 100).toFixed(1)}¢`)
+
+// 后端给的是 60 分钟 log-odds 变化，换算成概率变了几个百分点，用户更好理解：
+// 60 分钟前的 log-odds = 现在的 log-odds − 变化量（后端算的时候价格也夹在 [0.001, 0.999]）
+export function pointsChange(mid: number | null, logoddsChg: number | null): number | null {
+  if (mid == null || logoddsChg == null) return null
+  const before = sigmoid(logit(clamp(mid)) - logoddsChg)
+  return (clamp(mid) - before) * 100
+}
+
+export function secondsAgo(iso: string): number {
+  return Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+}
+
+export function ago(iso: string): string {
+  const s = Math.round(secondsAgo(iso))
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.round(s / 60)}m ago`
+  return `${Math.round(s / 3600)}h ago`
+}
+
+export function endDate(iso: string | null): string | null {
+  if (!iso) return null
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+export function clock(iso: string): string {
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}

@@ -58,8 +58,9 @@ def markets(conn: Conn, hours: Annotated[int, Query(ge=1, le=168)] = 24):
 
 
 @app.get("/api/markets/{market_id}/history")
-def history(conn: Conn, market_id: str, minutes: Annotated[int, Query(ge=1, le=1440)] = 60):
-    rows = queries.market_history(conn, market_id, minutes)
+def history(conn: Conn, market_id: str, minutes: Annotated[int, Query(ge=1, le=1440)] = 60,
+            bucket_seconds: Annotated[int, Query(ge=1, le=3600)] = 1):
+    rows = queries.market_history(conn, market_id, minutes, bucket_seconds)
     if not rows:
         raise HTTPException(404, "这个市场在这段时间内没有盘口数据")
     return rows

@@ -1,65 +1,86 @@
-import { useEffect, useState } from 'react'
-import { fetchMarkets, type Market } from './api'
+import { useEffect, useMemo, useState } from 'react'
+import { fetchHealth, fetchMarkets, type Health, type Market } from './api'
+import Header from './components/Header'
+import MarketTable from './components/MarketTable'
+import MoverCard from './components/MoverCard'
+import { pointsChange, secondsAgo } from './format'
 
 const REFRESH_MS = 5000
-
-const pct = (x: number | null) => (x == null ? '—' : `${(x * 100).toFixed(1)}%`)
-
-// 60 分钟价格变化（log-odds 差）。只显示方向和大小，正数涨、负数跌
-function Change({ x }: { x: number | null }) {
-  if (x == null) return <span className="muted">—</span>
-  const cls = x > 0.005 ? 'up' : x < -0.005 ? 'down' : 'muted'
-  return <span className={cls}>{x > 0 ? '+' : ''}{x.toFixed(2)}</span>
-}
-
-function ago(iso: string) {
-  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000))
-  return s < 60 ? `${s} 秒前` : s < 3600 ? `${Math.round(s / 60)} 分钟前` : `${Math.round(s / 3600)} 小时前`
-}
+const MOVERS = 4
+// 异动榜只看最近还在更新的市场（已移出订阅名单的市场，60 分钟变化是旧的）
+const MOVER_MAX_AGE_SECONDS = 15 * 60
 
 export default function App() {
   const [markets, setMarkets] = useState<Market[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [health, setHealth] = useState<Health | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     const load = () =>
-      fetchMarkets()
-        .then((m) => { setMarkets(m); setError(null) })
-        .catch((e) => setError(String(e)))
+      Promise.all([fetchMarkets(), fetchHealth()])
+        .then(([m, h]) => { setMarkets(m); setHealth(h); setFailed(false) })
+        .catch(() => setFailed(true))
+        .finally(() => setLoaded(true))
     load()
     const timer = setInterval(load, REFRESH_MS)
     return () => clearInterval(timer)
   }, [])
 
+  const movers = useMemo(
+    () =>
+      markets
+        .filter((m) => secondsAgo(m.updated_at) <= MOVER_MAX_AGE_SECONDS)
+        .map((m) => ({ m, pts: pointsChange(m.mid, m.logodds_chg_60m) }))
+        .filter((x) => x.pts != null)
+        .sort((a, b) => Math.abs(b.pts!) - Math.abs(a.pts!))
+        .slice(0, MOVERS)
+        .map((x) => x.m),
+    [markets],
+  )
+  const tracked = markets.filter((m) => secondsAgo(m.updated_at) <= MOVER_MAX_AGE_SECONDS).length
+
   return (
-    <main>
-      <h1>Polymarket 订单簿分析</h1>
-      <p className="muted">科技 / AI 类市场的实时盘口，每 {REFRESH_MS / 1000} 秒刷新。数据来自 Polymarket 公开接口，与 Polymarket 无关联，不构成投资建议。</p>
-      {error && <p className="error">加载失败：{error}</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>市场</th>
-            <th>选项</th>
-            <th className="num">概率</th>
-            <th className="num">买一 / 卖一</th>
-            <th className="num">60 分钟变化</th>
-            <th className="num">更新</th>
-          </tr>
-        </thead>
-        <tbody>
-          {markets.map((m) => (
-            <tr key={m.market_id}>
-              <td>{m.question}</td>
-              <td>{m.outcome}</td>
-              <td className="num">{pct(m.mid)}</td>
-              <td className="num">{pct(m.best_bid)} / {pct(m.best_ask)}</td>
-              <td className="num"><Change x={m.logodds_chg_60m} /></td>
-              <td className="num muted">{ago(m.updated_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </main>
+    <>
+      <Header health={health} failed={failed} />
+      <main className="container">
+        <section className="hero">
+          <h1>Order book analytics for prediction markets</h1>
+          <p>
+            Live depth, spreads and price moves for tech &amp; AI markets on Polymarket, rebuilt tick by tick
+            from the public order book feed.
+          </p>
+          {loaded && !failed && (
+            <div className="hero-stats">
+              <span><strong>{tracked}</strong> markets live</span>
+              <span><strong>{markets.length}</strong> seen in the last 24h</span>
+            </div>
+          )}
+        </section>
+
+        {failed && markets.length === 0 && (
+          <div className="card notice">The data service is offline right now. Please check back in a few minutes.</div>
+        )}
+
+        {movers.length > 0 && (
+          <section>
+            <div className="section-head">
+              <h2>Top movers <span className="muted">· last 60 min</span></h2>
+            </div>
+            <div className="movers">
+              {movers.map((m) => <MoverCard key={m.market_id} m={m} />)}
+            </div>
+          </section>
+        )}
+
+        {markets.length > 0 && <MarketTable markets={markets} />}
+      </main>
+
+      <footer className="site-footer">
+        <div className="container">
+          Data from Polymarket's public APIs. Depthscope is not affiliated with Polymarket. Not investment advice.
+        </div>
+      </footer>
+    </>
   )
 }

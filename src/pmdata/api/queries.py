@@ -37,15 +37,20 @@ def list_markets(conn, hours):
     ).fetchall()
 
 
-def market_history(conn, market_id, minutes):
-    """某个市场第一个选项过去 minutes 分钟的逐秒盘口（只有盘口变了的秒才有行）。"""
+def market_history(conn, market_id, minutes, bucket_seconds=1):
+    """某个市场第一个选项过去 minutes 分钟的盘口（只有盘口变了的秒才有行）。
+
+    bucket_seconds > 1 时按这么多秒一格取每格最后的值（画迷你走势图不需要逐秒的几千个点）。
+    """
     return conn.execute(
         """
-        select b.second, b.best_bid, b.best_ask, b.mid, b.microprice
+        select distinct on (1)
+               date_bin(make_interval(secs => %s), b.second, timestamptz '2000-01-01') as second,
+               b.best_bid, b.best_ask, b.mid, b.microprice
         from metrics_book b join tokens t using (asset_id)
         where t.market_id = %s and t.outcome_index = 1
           and b.second > now() - make_interval(mins => %s)
-        order by b.second
+        order by 1, b.second desc
         """,
-        (market_id, minutes),
+        (bucket_seconds, market_id, minutes),
     ).fetchall()

@@ -60,7 +60,13 @@ def test_history_404_when_empty():
     client, conn = client_with([])
     r = client.get("/api/markets/0xM/history?minutes=30")
     assert r.status_code == 404
-    assert conn.calls[0][1] == ("0xM", 30)
+    assert conn.calls[0][1] == (1, "0xM", 30)
+
+
+def test_history_bucket():
+    client, conn = client_with([{"second": "t", "mid": 0.5}])
+    assert client.get("/api/markets/0xM/history?minutes=60&bucket_seconds=60").status_code == 200
+    assert conn.calls[0][1] == (60, "0xM", 60)
 
 
 def test_cors_allows_dev_frontend_only():
