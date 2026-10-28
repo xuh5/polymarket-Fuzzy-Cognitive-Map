@@ -11,6 +11,7 @@
 - 冷门市场的兜底输出：每秒用电脑时间 flush(现在 − GRACE_MS)。只在所有分区都追上之后才做，
   预热时数据是几小时前的，用现在的时间 flush 会把还没到齐的秒提前输出。
 - 只跑一个实例：分区重新分配时直接清空 engine、按新分配重新预热。
+- 顺带把当前订单簿每秒同步进 Redis 给网站用（pmdata.book.cache）。只在追上之后同步：预热时的盘口是几小时前的。
 
 输出格式（下游依赖它，改字段要同步改下游）：见 engine.py 的 _book_metrics / _add_trade。
 key 是市场 ID；时间字段 second / minute / exchange_ts 是交易所时间毫秒，received_at / computed_at 是 UTC ISO 字符串。
@@ -21,9 +22,11 @@ import logging
 import signal
 import time
 
+import redis
 from confluent_kafka import Consumer, TopicPartition
 
-from pmdata.common.config import KAFKA_BOOTSTRAP, TOPIC_CLOB
+from pmdata.book.cache import BookCache
+from pmdata.common.config import KAFKA_BOOTSTRAP, REDIS_URL, TOPIC_CLOB
 from pmdata.common.kafka import make_producer
 from pmdata.common.log import setup_logging
 from pmdata.metrics.engine import MetricsEngine
@@ -50,9 +53,10 @@ def plan_start(committed, warm, low, high):
 
 
 class Runner:
-    def __init__(self, consumer, producer, warmup_hours=WARMUP_HOURS):
+    def __init__(self, consumer, producer, warmup_hours=WARMUP_HOURS, cache=None):
         self.consumer = consumer
         self.producer = producer
+        self.cache = cache     # BookCache；None = 不写 Redis（测试、试跑）
         self.warmup_ms = int(warmup_hours * 3600 * 1000)
         self.engine = MetricsEngine()
         self.resume = {}       # 分区 → 从哪个 offset 开始输出
@@ -92,6 +96,10 @@ class Runner:
         if self.caught_up():
             self.produce(self.engine.flush(up_to_ms=now_ms - GRACE_MS))
 
+    def sync_cache(self, now):
+        if self.cache is not None and self.caught_up():
+            self.cache.sync(self.engine.store, now)
+
     def produce(self, outs):
         for topic, key, rec in outs:
             self.producer.produce(topic, key=key, value=json.dumps(rec), on_delivery=self.on_delivery)
@@ -127,11 +135,15 @@ def main():
     parser.add_argument("--group-id", default=GROUP_ID, help="consumer group（试运行时换一个，不影响正式进度）")
     parser.add_argument("--warmup-hours", type=float, default=WARMUP_HOURS, help="启动时往回重放多少小时")
     parser.add_argument("--duration", type=int, help="运行多少秒后退出；不填则一直运行")
+    parser.add_argument("--no-redis", action="store_true", help="不把订单簿写进 Redis（试跑时用，别覆盖正式的盘口）")
     args = parser.parse_args()
     setup_logging()
 
     consumer = make_consumer(args.group_id)
-    runner = Runner(consumer, make_producer(), args.warmup_hours)
+    # 超时设短：Redis 卡住时最多耽误 1 秒，不拖住读 Kafka
+    cache = None if args.no_redis else BookCache(redis.Redis.from_url(REDIS_URL, socket_timeout=1,
+                                                                       socket_connect_timeout=1))
+    runner = Runner(consumer, make_producer(), args.warmup_hours, cache)
 
     stopping = False
 
@@ -158,6 +170,7 @@ def main():
             now = time.monotonic()
             if now - last_tick >= 1:
                 runner.flush_idle(int(time.time() * 1000))
+                runner.sync_cache(now)
                 last_tick = now
             if now - last_commit >= COMMIT_SECONDS:
                 runner.commit()

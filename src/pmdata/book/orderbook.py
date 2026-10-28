@@ -22,12 +22,14 @@ class Book:
         self.asks = {}
         self.valid = False
         self.exchange_ts = None   # 最后一次更新的交易所时间（毫秒）
+        self.version = 0          # 改过几次；同一毫秒可能改好几次，所以判断「变没变」用它，不用 exchange_ts
 
     def replace(self, bids, asks, exchange_ts):
         self.bids = {Decimal(x["price"]): Decimal(x["size"]) for x in bids}
         self.asks = {Decimal(x["price"]): Decimal(x["size"]) for x in asks}
         self.valid = True
         self.exchange_ts = exchange_ts
+        self.version += 1
 
     def set_level(self, side, price, size, exchange_ts):
         levels = self.bids if side == "BUY" else self.asks
@@ -37,6 +39,7 @@ class Book:
         else:
             levels[price] = size
         self.exchange_ts = exchange_ts
+        self.version += 1
 
     def best_bid(self):
         return max(self.bids) if self.bids else None

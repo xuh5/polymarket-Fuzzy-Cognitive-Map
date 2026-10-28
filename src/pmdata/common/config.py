@@ -23,6 +23,10 @@ load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 PG_DSN = (f"host={os.environ.get('PG_HOST', 'localhost')} port=5432 dbname=pm user=pm "
           f"password={os.environ.get('POSTGRES_PASSWORD', '')}")
 
+# Redis：当前订单簿的缓存（metrics 写、网站后端读）。容器里设成 redis://redis:6379/0
+# 宿主机用 127.0.0.1 不用 localhost：Windows 上 localhost 先试 IPv6，Redis 只绑了 IPv4，每次连接白等约 2 秒
+REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")
+
 # 网站后端允许哪些网页来调用（逗号分隔）；默认是本机前端开发服务器的地址
 API_CORS_ORIGINS = os.environ.get("API_CORS_ORIGINS", "http://localhost:5173").split(",")
 

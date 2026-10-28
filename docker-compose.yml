@@ -137,8 +137,10 @@ services:
     restart: unless-stopped
     depends_on:
       - kafka
+      - redis
     environment:
       KAFKA_BOOTSTRAP: kafka:19092
+      REDIS_URL: redis://redis:6379/0
     command: python -m pmdata.metrics.run
     logging: *logging
 
@@ -155,6 +157,16 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pg-data:/var/lib/postgresql/data
+    logging: *logging
+
+  # 当前订单簿的缓存：metrics 每秒写进来，网站后端读。只当缓存用，不存盘（丢了 metrics 下一秒会重写）
+  redis:
+    image: redis:8.10.2-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb"]
+    ports:
+      - "127.0.0.1:6379:6379"        # 只给本机程序用，不对外
     logging: *logging
 
   # 一直运行：读 pm.metrics.* 和 pm.raw.markets，upsert 进 Postgres（数据库提交后才提交 offset）

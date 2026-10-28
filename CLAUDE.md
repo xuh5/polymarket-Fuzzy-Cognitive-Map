@@ -91,6 +91,8 @@ docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服�
 
 另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，3000 端口，VS Code 端口转发访问，用户名 admin）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源、看板和告警用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留；告警是 `grafana/provisioning/alerting/alerts.yml`，发到 Discord）。
 
+`redis`（redis:8.10.2-alpine，只绑 127.0.0.1:6379，不存盘）：当前订单簿缓存，metrics 每秒写 `book:<asset_id>`（格式见 `src/pmdata/book/cache.py`），网站后端读。宿主机连 Redis 用 127.0.0.1，别用 localhost（Windows 上每次连接白等约 2 秒）。
+
 Airflow 3.3.2（2026-10-23 加入，镜像 `polymarket-airflow` = 官方 `apache/airflow:3.3.2-python3.12` + `/opt/dbt-venv` 里单独装的 dbt，见 `airflow/Dockerfile`）：精简部署 LocalExecutor，`airflow-init`（一次性：建元数据表 + admin 用户）、`airflow-apiserver`（网页，宿主机 **8081**，只绑 127.0.0.1，用户 admin / `.env` 的 AIRFLOW_ADMIN_PASSWORD）、`airflow-scheduler`（任务就在这里跑，挂了 `./dbt` 和 `./data` 到 `/opt/project/`）、`airflow-dag-processor`；不装 triggerer/redis/worker。元数据库是现有 postgres 里单独的 `airflow` 库和用户（手动建的，新环境要先建，命令见 README）。DAG 在 `airflow/dags/`（只读挂载，改了不用重建镜像）。基础镜像同样要用户在台式机本地 pull，之后 SSH 下 `DOCKER_BUILDKIT=0 docker build -t polymarket-airflow airflow/`，再 `docker compose up -d --no-deps airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor`。
 - 坑：Git Bash 里 `docker exec` 带 `/opt/...` 路径要加 `MSYS_NO_PATHCONV=1`，否则路径被改成 Windows 路径。
 - 手动跑一次 DAG（不用先打开）：`MSYS_NO_PATHCONV=1 docker exec airflow-scheduler airflow dags test dbt_daily`。
