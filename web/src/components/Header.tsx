@@ -40,6 +40,7 @@ export default function Header({ health, failed }: { health: Health | null; fail
           {/* NavLink 会给当前页面的链接加上 active 样式 */}
           <NavLink to="/" end>Markets</NavLink>
           <NavLink to="/signals">Signals</NavLink>
+          <NavLink to="/fuzzy-map">Fuzzy Map</NavLink>
           <NavLink to="/status">Status</NavLink>
           <NavLink to="/about">About</NavLink>
         </nav>

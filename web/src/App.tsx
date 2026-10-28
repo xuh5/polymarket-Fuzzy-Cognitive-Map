@@ -33,6 +33,10 @@ export default function App() {
             <Placeholder title="Signals"
               description="Markets with suspicious depth, and recent alerts for large moves and liquidity drops." />
           } />
+          <Route path="/fuzzy-map" element={
+            <Placeholder title="Fuzzy Map"
+              description="A fuzzy cognitive map of how markets and events push each other's odds up or down." />
+          } />
           <Route path="/status" element={
             <Placeholder title="Status"
               description="Live health of the data pipeline: latency, throughput, consumer lag and resyncs." />
