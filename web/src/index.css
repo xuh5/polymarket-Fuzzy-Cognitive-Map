@@ -534,7 +534,7 @@ tr.stale td { opacity: 0.5; }
 
 /* ---------- 可点击 ---------- */
 tr.clickable { cursor: pointer; }
-td a.q { display: block; }
+td a.q { display: inline; }
 td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 /* 卡片整块可点：链接的点击区域铺满卡片（走势图在上层，鼠标悬停仍然可用） */
