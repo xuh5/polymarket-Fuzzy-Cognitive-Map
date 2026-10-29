@@ -48,3 +48,9 @@ def test_reconnect_rows_one_per_connection():
     assert set(rows) == {"c1", "c2"}
     assert rows["c1"][3] == 1.6 and rows["c1"][4] == "ConnectionClosedError: x"
     assert rows["c2"][2] is None and rows["c2"][3] is None
+
+
+def test_latency_sql_covers_every_column():
+    from pmdata.health.latency import COLS, UPSERT
+    assert len(COLS) == 8
+    assert UPSERT.count("percentile_cont") == len(COLS)

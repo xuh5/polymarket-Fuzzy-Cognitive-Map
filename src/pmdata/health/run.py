@@ -1,7 +1,7 @@
 """管道健康程序（容器 health）：把管道自己的运行状况写进 Postgres，给 Status 页面和告警用。
 
-一个循环里做两件事：
-- 每 LAG_EVERY 秒记录一次各 consumer group 的消费积压（lag.py）
+一个循环里做三件事：
+- 每 LAG_EVERY 秒记录一次各 consumer group 的消费积压（lag.py），顺便把上一分钟的延迟汇总一下（latency.py）
 - 其余时间用自己的 consumer（group = pm-health）读 pm.raw.clob，挑出缺口标记记成断线重连（reconnects.py）
   第一次启动从 Kafka 现存最早的消息读起，所以会补上过去 7 天的重连记录；重连记录一直保留（一天才几条）。
 
@@ -19,7 +19,7 @@ from confluent_kafka.admin import AdminClient
 
 from pmdata.common.config import KAFKA_BOOTSTRAP, PG_DSN, TOPIC_CLOB
 from pmdata.common.log import setup_logging
-from pmdata.health import lag, reconnects
+from pmdata.health import lag, latency, reconnects
 
 log = logging.getLogger("health")
 
@@ -40,6 +40,8 @@ def main():
     with conn.transaction():
         conn.execute(lag.SCHEMA)
         conn.execute(reconnects.SCHEMA)
+        conn.execute(latency.SCHEMA)
+    latency.backfill(conn)
     admin = AdminClient({"bootstrap.servers": KAFKA_BOOTSTRAP})
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP,
@@ -68,6 +70,7 @@ def main():
             if now >= next_lag:
                 next_lag += LAG_EVERY
                 lag.record(conn, admin)
+                latency.record(conn)
             if now - last_cleanup >= CLEANUP_SECONDS:
                 lag.cleanup(conn)
                 last_cleanup = now
