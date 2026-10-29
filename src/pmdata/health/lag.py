@@ -1,34 +1,28 @@
 """Kafka 消费积压监控：每个 consumer group 还有多少条消息没处理完。
 
-每 INTERVAL_SECONDS 秒问一次 Kafka：
+每分钟问一次 Kafka：
 - 每个 group 已提交的 offset（处理到哪了）——不用写 topic 名单，group 提交过哪些分区就查哪些
 - 这些分区现在的末尾 offset（topic 写到哪了）
 积压 = 末尾 − 已提交，每个分区一行写进 Postgres 表 health_consumer_lag，给 Status 页面和告警用。
+由 pmdata.health.run 每分钟调用；直接运行本模块只打印一轮结果。
 
 只读 Kafka，不加入被监控的 group，不会影响它们的分区分配和进度。
 注意 archiver 本来就攒满 5 分钟才提交一次，所以它平时就有几分钟的积压，是正常的。
-查 Kafka 出错只跳过这一轮（缺的那几分钟本身就说明出了问题）；写数据库出错直接退出，让 Docker 重启。
 """
 import argparse
 import logging
-import signal
-import time
 from datetime import UTC, datetime
 
-import psycopg
 from confluent_kafka import ConsumerGroupTopicPartitions, TopicPartition
 from confluent_kafka.admin import AdminClient, OffsetSpec
 
-from pmdata.common.config import KAFKA_BOOTSTRAP, PG_DSN
-from pmdata.common.log import setup_logging
+from pmdata.common.config import KAFKA_BOOTSTRAP
 
 log = logging.getLogger("health-lag")
 
 # 要盯的 consumer group，新加程序时在这里加一行
 GROUPS = ["pm-archiver", "pm-metrics", "pm-pg-sink"]
-INTERVAL_SECONDS = 60
 RETENTION_DAYS = 7
-CLEANUP_SECONDS = 3600
 TIMEOUT = 10
 
 SCHEMA = """
@@ -97,66 +91,35 @@ def fetch(admin, groups):
     return committed, ends
 
 
+def record(conn, admin):
+    """查一轮积压写进数据库。Kafka 暂时连不上就跳过这一轮（缺的那几分钟本身就说明出了问题）。"""
+    ts = datetime.now(UTC).replace(microsecond=0)
+    try:
+        committed, ends = fetch(admin, GROUPS)
+    except Exception as e:
+        log.warning("查询 Kafka 失败，跳过这一轮：%s", e)
+        return
+    rows = lag_rows(ts, committed, ends)
+    with conn.transaction(), conn.cursor() as cur:
+        cur.executemany(INSERT, rows)
+    totals = {}
+    for _, group, *_rest, lag in rows:
+        totals[group] = totals.get(group, 0) + lag
+    log.info("积压 %s", totals)
+
+
 def cleanup(conn):
     with conn.transaction(), conn.cursor() as cur:
         cur.execute(f"delete from health_consumer_lag where ts < now() - interval '{RETENTION_DAYS} days'")
-        log.info("清理 %d 天前的数据：%d 行", RETENTION_DAYS, cur.rowcount)
+        log.info("清理 %d 天前的积压记录：%d 行", RETENTION_DAYS, cur.rowcount)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kafka 消费积压 → Postgres")
-    parser.add_argument("--once", action="store_true", help="只查一轮、打印结果，不写数据库")
-    args = parser.parse_args()
-    setup_logging()
-
-    admin = AdminClient({"bootstrap.servers": KAFKA_BOOTSTRAP})
-    if args.once:
-        committed, ends = fetch(admin, GROUPS)
-        for _, group, topic, p, off, end, lag in lag_rows(datetime.now(UTC), committed, ends):
-            print(f"{group:12} {topic:18} p{p}  已提交 {off:>10}  末尾 {end:>10}  积压 {lag:>7}")
-        return
-
-    conn = psycopg.connect(PG_DSN)
-    with conn.transaction():
-        conn.execute(SCHEMA)
-
-    stopping = False
-
-    def stop(signum, frame):
-        nonlocal stopping
-        stopping = True
-
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-
-    log.info("开始，盯 %s，每 %d 秒一次", GROUPS, INTERVAL_SECONDS)
-    last_cleanup = 0.0
-    next_run = time.monotonic()
-    try:
-        while not stopping:
-            if time.monotonic() < next_run:
-                time.sleep(0.5)
-                continue
-            next_run += INTERVAL_SECONDS
-            ts = datetime.now(UTC).replace(microsecond=0)
-            try:
-                committed, ends = fetch(admin, GROUPS)
-            except Exception as e:   # Kafka 暂时连不上：这一轮跳过
-                log.warning("查询 Kafka 失败，跳过这一轮：%s", e)
-                continue
-            rows = lag_rows(ts, committed, ends)
-            with conn.transaction(), conn.cursor() as cur:
-                cur.executemany(INSERT, rows)
-            totals = {}
-            for _, group, *_rest, lag in rows:
-                totals[group] = totals.get(group, 0) + lag
-            log.info("积压 %s", totals)
-            if time.monotonic() - last_cleanup >= CLEANUP_SECONDS:
-                cleanup(conn)
-                last_cleanup = time.monotonic()
-        log.info("停止")
-    finally:
-        conn.close()
+    """命令行查一轮、打印结果，不写数据库。常驻运行见 pmdata.health.run。"""
+    argparse.ArgumentParser(description="打印各 consumer group 的消费积压（只读）").parse_args()
+    committed, ends = fetch(AdminClient({"bootstrap.servers": KAFKA_BOOTSTRAP}), GROUPS)
+    for _, group, topic, p, off, end, lag in lag_rows(datetime.now(UTC), committed, ends):
+        print(f"{group:12} {topic:18} p{p}  已提交 {off:>10}  末尾 {end:>10}  积压 {lag:>7}")
 
 
 if __name__ == "__main__":
