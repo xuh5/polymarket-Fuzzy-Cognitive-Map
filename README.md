@@ -1,12 +1,12 @@
 # Polymarket Real-Time Order Book Analytics
 
-A Kafka-based system that collects live order book, trade, and comment data from [Polymarket](https://polymarket.com) prediction markets (tech/AI category). It archives raw events for replay, rebuilds full order books in memory, computes real-time metrics, and serves them on a Grafana dashboard.
+A Kafka-based system that collects live order book, trade, and comment data from [Polymarket](https://polymarket.com) prediction markets (tech/AI category). It archives raw events for replay, rebuilds full order books in memory, computes real-time metrics, and serves them on a website (Depthscope) and a Grafana dashboard.
 
 The goal is a public order book analytics site built on this pipeline: flag suspicious depth, replay large price moves, push alerts for important events, and show pipeline health on a public status page. No trading, no fees, no redistribution of raw data, no user accounts. Not affiliated with Polymarket.
 
 Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 
-> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is next. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
+> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website runs locally with market pages (depth chart, slippage calculator) and a status page; public deployment and price-move replay are next. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
 
 ## Architecture
 
@@ -15,9 +15,14 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
  ───────────────                     ──────────────────────────             ─────────
  Gamma REST (markets) ──fetch──────▶ pm.raw.markets   (compacted) ──┬──▶ archiver ──▶ Parquet (bronze) ──▶ dbt-duckdb (silver / gold) ◀── Airflow (daily)
  CLOB WebSocket ────────collect────▶ pm.raw.clob      (7 days)    ──┼──▶ metrics ───▶ pm.metrics.book / pm.metrics.trades
- Comments REST ─────────poll───────▶ pm.raw.comments  (compacted) ──┘                     │
-                                                                                          ▼
-                                                                    pg-sink (upsert) ──▶ Postgres ──▶ Grafana
+ Comments REST ─────────poll───────▶ pm.raw.comments  (compacted) ──┘       │             │
+                                                                            ▼             ▼
+                                                                          Redis     pg-sink (upsert) ──▶ Postgres ──▶ Grafana
+                                                                            │                               │
+                                                                            └──▶ api (FastAPI) ◀────────────┘
+                                                                                  │
+                                                                                  ▼
+                                                                           web (React, TypeScript)
 ```
 
 | Layer | What it does | Code |
@@ -26,7 +31,8 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 | Archive (bronze) | Consumes all raw topics and writes Hive-partitioned Parquet files. Offsets are committed only after a file is fully written. | `src/pmdata/archive/` |
 | Batch models | dbt-duckdb: staging models unpack JSON and deduplicate (silver); a star schema of `dim_markets`, `dim_tokens`, `fct_trades`, and `fct_top_of_book` (gold). 80 dbt tests. | `dbt/` |
 | Order book | Pure-logic L2 order book rebuild from Kafka events. It does no I/O, so live processing and historical replay share the same code. | `src/pmdata/book/` |
-| Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). | `src/pmdata/metrics/` |
+| Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). The current order book of every token is also synced to Redis once a second. | `src/pmdata/metrics/` |
+| Website | FastAPI backend reads the live order book from Redis and metrics from Postgres; it never touches Kafka or DuckDB. The React + TypeScript front end polls it every few seconds: market list, market page with depth chart and slippage calculator, and the status page. | `src/pmdata/api/`, `web/` |
 | Serving and alerting | Idempotent upsert into Postgres; Grafana dashboard and alert rules provisioned from files. Alerts (pipeline stalled, market catalog stale) and failed Airflow tasks are sent to Discord. | `src/pmdata/sink/`, `grafana/` |
 | Pipeline health | Every minute, records each consumer group's lag (committed offset vs. end offset, per partition) into Postgres; throughput is derived from the same offsets. Collector reconnects and their downtime are rebuilt from the gap markers in the raw stream. Per-minute p50/p99 latency is kept for each hop (exchange → received → computed → stored). Since the feed has no sequence numbers, missed messages are detected indirectly: the service keeps its own order book and counts how often its best bid/ask disagrees with the values the exchange attaches to each update; it also counts out-of-order exchange timestamps. | `src/pmdata/health/` |
 | Orchestration | Airflow 3 (LocalExecutor) runs `dbt build` daily at 01:00 UTC, so models and tests are rebuilt on yesterday's complete data. dbt lives in its own virtualenv inside the Airflow image, and DuckDB is capped at 4 GB / 2 threads so the batch job cannot starve the live collectors. | `airflow/` |
@@ -55,7 +61,7 @@ Most of the latency is a deliberate trade-off. Each token emits at most once per
 
 ## Running it
 
-Requirements: Docker, Python 3.12.
+Requirements: Docker, Python 3.12, Node 24 (front end).
 
 ```bash
 # 1. Start Kafka and create topics
@@ -79,15 +85,18 @@ docker compose up -d
 # 4. Batch models: Airflow runs them daily; to run by hand (from dbt/)
 cd dbt && PYTHONUTF8=1 dbt build
 
+# 5. Front end (the dev server forwards /api to the api container on 127.0.0.1:8000)
+cd web && npm install && npm run dev
+
 # Tests and lint
 pytest && ruff check .
 ```
 
-Grafana runs at `localhost:3000`, Kafka UI at `localhost:8080`, and Airflow at `localhost:8081`.
+The website runs at `localhost:5173` (API docs at `localhost:8000/docs`), Grafana at `localhost:3000`, Kafka UI at `localhost:8080`, and Airflow at `localhost:8081`.
 
 ## Tech stack
 
-Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · Airflow 3 · PostgreSQL 17 · Grafana 12 · Docker Compose · pytest · ruff
+Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · Airflow 3 · PostgreSQL 17 · Redis · Grafana 12 · FastAPI · React / TypeScript / Vite · Docker Compose · pytest · ruff
 
 ## Roadmap
 

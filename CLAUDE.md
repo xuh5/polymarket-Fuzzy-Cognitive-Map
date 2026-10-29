@@ -247,7 +247,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - **2026-10-28 方向确定：订单簿分析平台**（计划书 `polymarket-orderbook-platform.md`，用户写的，同天按讨论改过：模块 2 只标可疑不分辨做市、模块 4 不做账户）。原阶段 4/5 删除（见「目标」）。
   - 可行性（同天用 10-24～26 数据实测）：行情只给每个价位的汇总量，没有订单 ID 和挂单人。6407 笔成交里 96% 能在 ±2 秒内找到同 token、挂单方一侧、同价位的「量变少」（时间差中位数 21ms，很少同一毫秒，要按时间窗口配）；其中 56% 减少量正好等于成交量，其余是同时有撤单或补挂混在一起。同期价位量减少 563 万次，对得上成交的只有 6 千多次，其余都是撤单——所以「挂了又撤、没怎么成交」按价位能算出来。做不到的：一个价位上是一张单还是几张单、同一时刻撤了又挂（净变化为 0）、谁挂的。
   - 提给用户、还没定的计划书修改：加「网站骨架与部署」一块（API + 前端 + 对外开放，计划书里没写）；模块 2 开发前先用 bronze 探索这种现象多不多；key 保持按市场 ID（计划书写的是 token ID）；模块 3 先不上 ClickHouse/TimescaleDB/S3，用 bronze + 定期快照，慢了再说；模块 5 现有 Grafana/Postgres 告警继续用，延迟要写明是哪一段。
-  - 下一步：模块 1 还缺深度图和滑点计算，都要上网站，所以先搭网站骨架。架构已和用户讨论过：新加 `src/pmdata/api/`（FastAPI，只读 Postgres + 读 pm.metrics.* 用 WebSocket 推给浏览器；每个实例自己的 group、不提交 offset，是广播不是分摊）、前端放根目录 `web/`；网站不读 warehouse.duckdb（单写者、每天 01:00 dbt 重建时锁住）；pm.metrics.* 格式要固定（`common/schemas.py`）。实时推送用轮询 Postgres 还是读 Kafka 还没定。订阅市场数量以后再扩。
+  - 下一步：模块 1 还缺深度图和滑点计算，都要上网站，所以先搭网站骨架。架构已和用户讨论过：新加 `src/pmdata/api/`（FastAPI，只读 Postgres + 读 pm.metrics.* 用 WebSocket 推给浏览器；每个实例自己的 group、不提交 offset，是广播不是分摊）、前端放根目录 `web/`；网站不读 warehouse.duckdb（单写者、每天 01:00 dbt 重建时锁住）；pm.metrics.* 格式要固定（`common/schemas.py`）。订阅市场数量以后再扩。
+  - 实际做法：前端每 2～5 秒轮询后端接口（盘口读 Redis，走势/指标读 Postgres），没做 WebSocket 推送，也没加 schemas.py。模块 1 的深度图、滑点已上市场详情页。后端 2026-10-29 起跑在 api 容器里。
   - 部署（用户 2026-10-28 定）：后端 FastAPI 跑在台式机 Docker 里，用 Cloudflare Tunnel 对外；前端 React 放 Cloudflare Pages。
   - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Depth quality 三个 tab。
 
