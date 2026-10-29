@@ -254,6 +254,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。吞吐量不另写程序：视图 health_throughput 用相邻两次 offset 相减（processed = 已提交涨了多少，written = 末尾涨了多少）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。断线重连：health 用 group pm-health 读 pm.raw.clob 的缺口标记，按 conn_id 一次重连一行写表 health_reconnects（永久保留；「加入订阅名单」不算）。延迟：每分钟从 metrics_book 汇总四段（交易所→收到、收到→算完、算完→入库、端到端）的 p50/p99 写表 health_latency（按 inserted_at 归分钟，永久保留，启动时补算现存 7 天）。行情质量：health 自己维护一份订单簿（启动预热 24 小时，复用 metrics 的 plan_start），每分钟写表 health_stream_quality——乱序（同市场 price_change 交易所时间倒退，交易所本身一天约 180 次、多为 1～7ms；只比 price_change 之间，和 best_bid_ask 比全是假乱序）、盘口对不上（本地买一卖一 vs 交易所带的，代表漏消息）、盘口不可用时忽略的变化。health 的 Postgres 连接用 autocommit（2026-10-29 踩坑：单独一句查询隐式开事务没提交，之后的写入全变成 savepoint 没落库，还锁住了表）。
 - 2026-10-29 补回的重连记录发现：10-26 断网后 SSL 证书校验失败断断续续持续到 10-27 16:21（18 次，每次 16～125 秒）；10-29 08:46 台式机重启后 Docker 到 11:42 才起来，停了约 3 小时（Grafana 也没起来，所以没告警）。
 - Status 页面（2026-10-29，用户同意的布局）：总体状态条、管道图、四个关键数字、7 天每小时可用率（采集器 / 实时指标 / 归档）、延迟/吞吐/积压图（1h/24h/7d）、超过 1 分钟的事故（同类隔不到 30 分钟合并）。接口 `/api/status`、`/api/status/charts`。积压图不放 archive（5 分钟一提交，量级不同）。
+- **模块 5 完成（2026-10-29）**。下一个：模块 3 跳动回放。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
