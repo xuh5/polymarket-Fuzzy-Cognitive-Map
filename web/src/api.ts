@@ -86,3 +86,65 @@ export const fetchBook = (marketId: string, outcomeIndex: number) =>
 
 // Polymarket 上这个市场的页面（/market/<slug> 会自动跳到所属事件下的正确网址）
 export const polymarketUrl = (slug: string) => `https://polymarket.com/market/${slug}`
+
+// ---------- Status 页面（pmdata/api/status.py） ----------
+export type HealthLevel = 'ok' | 'degraded' | 'down' | 'none'
+export const LEVEL_TEXT = { ok: 'Operational', degraded: 'Degraded', down: 'Outage', none: 'No data' } as const
+
+// 各段延迟（毫秒）：每分钟的 p50 / p99 再取中位数
+export interface Latency {
+  exch_recv_p50: number | null
+  exch_recv_p99: number | null
+  recv_comp_p50: number | null
+  recv_comp_p99: number | null
+  comp_ins_p50: number | null
+  comp_ins_p99: number | null
+  end_to_end_p50: number | null
+  end_to_end_p99: number | null
+}
+
+export interface UptimeHour {
+  start: string
+  level: HealthLevel
+  down_seconds: number
+}
+
+export interface Incident {
+  title: string
+  start: string
+  end: string
+  down_seconds: number
+  count: number
+}
+
+export type Stage = 'collector' | 'kafka' | 'metrics' | 'database' | 'archive'
+
+export interface StatusSummary {
+  generated_at: string
+  level: Exclude<HealthLevel, 'none'>
+  title: string
+  reasons: string[]
+  live_age_seconds: number | null
+  latency_24h: Latency
+  latency_1h: Latency
+  throughput: { ingest_per_s: number | null; metrics_per_s: number | null }
+  lag_seconds: Record<string, number | null>
+  stages: Record<Stage, HealthLevel>
+  quality_1h: { checked: number; mismatched: number; out_of_order: number; ignored: number; accuracy: number | null }
+  uptime: Record<'collector' | 'live' | 'archive', { uptime: number | null; hours: UptimeHour[] }>
+  incidents: Incident[]
+}
+
+export type StatusRange = '1h' | '24h' | '7d'
+export type SeriesRow = { t: string } & Record<string, number | string | null>
+
+export interface StatusCharts {
+  range: StatusRange
+  bucket_seconds: number
+  latency: SeriesRow[]      // network / processing / storage / p50 / p99（毫秒）
+  throughput: SeriesRow[]   // ingest / metrics（条/秒）
+  lag: SeriesRow[]          // 每个 consumer group 落后几秒
+}
+
+export const fetchStatus = () => getJson<StatusSummary>('/api/status')
+export const fetchStatusCharts = (range: StatusRange) => getJson<StatusCharts>(`/api/status/charts?range=${range}`)

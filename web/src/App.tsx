@@ -6,6 +6,7 @@ import Header from './components/Header'
 import MarketPage from './pages/MarketPage'
 import Markets from './pages/Markets'
 import Placeholder from './pages/Placeholder'
+import Status from './pages/Status'
 
 const HEALTH_REFRESH_MS = 5000
 
@@ -39,10 +40,7 @@ export default function App() {
             <Placeholder title="Fuzzy Map"
               description="A fuzzy cognitive map of how markets and events push each other's odds up or down." />
           } />
-          <Route path="/status" element={
-            <Placeholder title="Status"
-              description="Live health of the data pipeline: latency, throughput, consumer lag and resyncs." />
-          } />
+          <Route path="/status" element={<Status />} />
           <Route path="/about" element={
             <Placeholder title="About"
               description="How Depthscope works: from the exchange feed to your browser." />

@@ -13,6 +13,15 @@
   --up-soft: #e7f5ec;
   --down: #c2362f;
   --down-soft: #fcebe9;
+  /* 图表系列色（按固定顺序用，已用配色校验脚本检查过色弱可分辨） */
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  /* 状态色：只用来表示状态，旁边总是配文字或图标 */
+  --good: #0ca30c;
+  --warn: #fab219;
+  --crit: #d03b3b;
+  --nodata: #e6e5e0;
   --radius: 12px;
   --shadow: 0 1px 2px rgba(17, 17, 16, 0.04), 0 1px 1px rgba(17, 17, 16, 0.03);
 
@@ -952,3 +961,184 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 }
 
 .pv-empty { padding: 24px 0; text-align: center; color: var(--muted); }
+
+/* ---------- Status 页面 ---------- */
+.status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 8px;
+  flex: none;
+}
+.status-dot.ok { background: var(--good); }
+.status-dot.degraded { background: var(--warn); }
+.status-dot.down { background: var(--crit); }
+.status-dot.none { background: var(--border-strong); }
+
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  margin-bottom: 40px;
+  border-left: 4px solid var(--good);
+}
+.status-banner.degraded { border-left-color: var(--warn); }
+.status-banner.down { border-left-color: var(--crit); }
+
+.banner-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex: none;
+  color: #fff;
+  font-weight: 700;
+  background: var(--good);
+}
+.status-banner.degraded .banner-icon { background: var(--warn); color: var(--ink); }
+.status-banner.down .banner-icon { background: var(--crit); }
+
+.banner-text { flex: 1; min-width: 0; }
+.banner-title { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.banner-updated { font-size: 13px; white-space: nowrap; }
+
+/* 管道图：电脑上横排，手机上竖排 */
+.pipeline { padding: 20px; }
+.pipe-row { display: flex; align-items: stretch; padding-top: 10px; }
+.pipe-step { display: flex; align-items: center; flex: 1 1 0; min-width: 0; }
+.pipe-node {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.pipe-name { display: flex; align-items: center; font-weight: 600; font-size: 14px; white-space: nowrap; }
+.pipe-sub { font-size: 12px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pipe-hop {
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 20px;
+  display: flex;
+  justify-content: center;
+}
+.pipe-hop::before {             /* 箭头的线 */
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 6px;
+  top: 50%;
+  border-top: 1.5px solid var(--border-strong);
+}
+.pipe-hop::after {              /* 箭头的头 */
+  content: '';
+  position: absolute;
+  right: 4px;
+  top: calc(50% - 4px);
+  border: 4px solid transparent;
+  border-left: 6px solid var(--border-strong);
+  border-right: 0;
+}
+.pipe-hop span {
+  position: relative;
+  top: -14px;
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pipe-archive {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--ink-2);
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.pipe-archive b { font-weight: 600; }
+
+@media (max-width: 860px) {
+  .pipe-row { flex-direction: column; padding-top: 0; }
+  .pipe-step { flex-direction: column; align-items: stretch; }
+  .pipe-hop { width: auto; height: 28px; }
+  .pipe-hop::before { left: 24px; right: auto; top: 2px; bottom: 6px; border-top: 0; border-left: 1.5px solid var(--border-strong); }
+  .pipe-hop::after { left: 20px; right: auto; top: auto; bottom: 0; border: 4px solid transparent; border-top: 6px solid var(--border-strong); border-bottom: 0; }
+  .pipe-hop span { top: 6px; left: 36px; position: absolute; }
+}
+
+/* 可用率条 */
+.uptime { padding: 18px 20px; }
+.uptime-row + .uptime-row { margin-top: 18px; }
+.uptime-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.uptime-head .muted { font-weight: 500; }
+.uptime-bar { position: relative; display: flex; gap: 1px; height: 28px; }
+.uptime-bar .cell { flex: 1; min-width: 0; border-radius: 2px; background: var(--nodata); }
+.uptime-bar .cell.ok { background: var(--good); opacity: 0.85; }
+.uptime-bar .cell.degraded { background: var(--warn); }
+.uptime-bar .cell.down { background: var(--crit); }
+.uptime-bar .cell.hover { opacity: 1; outline: 2px solid var(--ink); outline-offset: 1px; }
+.uptime-tip { bottom: 36px; transform: translateX(-50%); z-index: 5; }
+.uptime-axis { display: flex; justify-content: space-between; font-size: 12px; margin-top: 8px; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.legend > span { display: inline-flex; align-items: center; }
+.chart-card .legend { margin: 4px 0 10px; }
+.key-line { height: 2px; vertical-align: 3px; }
+.key.dashed { background: none; height: 0; border-top: 2px dashed; vertical-align: 4px; }
+
+/* 图表 */
+.status-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.status-charts .wide { grid-column: 1 / -1; }
+.status-charts h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.status-charts h3 .muted { font-weight: 500; }
+@media (max-width: 860px) { .status-charts { grid-template-columns: 1fr; } }
+
+.ts-line { fill: none; stroke-width: 2; stroke-linejoin: round; }
+.ts-line.dashed { stroke-dasharray: 5 4; stroke-width: 1.5; }
+.ts-area { stroke: var(--surface); stroke-width: 2; stroke-linejoin: round; opacity: 0.9; }
+.ts-dot { stroke: var(--surface); stroke-width: 2; }
+.ts-end { font-size: 12px; fill: var(--ink-2); }
+
+.fine-print { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+
+/* 事故列表 */
+.incidents { padding: 4px 20px; }
+.incidents .empty { padding: 16px 0; color: var(--muted); }
+.incident {
+  display: grid;
+  grid-template-columns: 210px 1fr auto;
+  gap: 16px;
+  align-items: baseline;
+  padding: 12px 0;
+  font-size: 14px;
+}
+.incident + .incident { border-top: 1px solid var(--border); }
+.inc-when { display: flex; gap: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inc-dur { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 560px) {
+  .incident { grid-template-columns: 1fr auto; gap: 4px 12px; }
+  .inc-when { grid-column: 1 / -1; }
+  .status-banner { flex-wrap: wrap; }
+  .banner-updated { flex-basis: 100%; padding-left: 48px; }
+}

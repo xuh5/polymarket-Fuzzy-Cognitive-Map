@@ -9,7 +9,8 @@
 import argparse
 import json
 from contextlib import asynccontextmanager
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Literal
 
 import redis
 import uvicorn
@@ -19,7 +20,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from pmdata.api import queries
+from pmdata.api import queries, status
 from pmdata.book.cache import KEY_PREFIX
 from pmdata.common.config import API_CORS_ORIGINS, PG_DSN, REDIS_URL
 
@@ -116,6 +117,17 @@ def book(conn: Conn, r: Redis, market_id: str, outcome_index: Annotated[int, Que
     return {**base, "available": True, "exchange_ts": b["exchange_ts"], "written_at": b["written_at"],
             "bids": [[float(p), float(s)] for p, s in b["bids"]],
             "asks": [[float(p), float(s)] for p, s in b["asks"]]}
+
+
+@app.get("/api/status")
+def pipeline_status(conn: Conn):
+    """Status 页面：总体状态、各段延迟、吞吐量、积压、行情质量、过去 7 天每小时的可用率、事故列表。"""
+    return status.summary(conn, datetime.now(UTC))
+
+
+@app.get("/api/status/charts")
+def pipeline_charts(conn: Conn, range: Literal["1h", "24h", "7d"] = "24h"):
+    return status.charts(conn, range)
 
 
 def main():

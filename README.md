@@ -91,8 +91,7 @@ Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow 
 
 ## Roadmap
 
-- Website: depth chart and a slippage calculator ("how far would a $X order move the price")
-- Public status page: latency, throughput, consumer lag, resyncs
+- Deploy the website publicly. Market pages (depth chart, slippage calculator) and the status page (latency by stage, throughput, consumer lag, order book accuracy, hourly uptime, incidents) already run locally.
 - Price-move replay: scrub the order book before and after a large move, with a one-line verdict (eaten by trades, pulled, or a thin book pushed by small orders)
 - Suspicious depth: per price level, flag large orders that are repeatedly placed and pulled with little trading, and score each market
 - Alerts for large moves, suspicious depth, and liquidity drops, pushed to a public Discord or Telegram channel

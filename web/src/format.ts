@@ -47,3 +47,30 @@ export function usd(x: number | null): string {
 }
 
 export const shares = (x: number) => x.toLocaleString('en-US', { maximumFractionDigits: 0 })
+
+// 延迟：1 秒以下用毫秒，以上用秒
+export function ms(x: number | null): string {
+  if (x == null) return '—'
+  return Math.abs(x) < 1000 ? `${Math.round(x)} ms` : `${(x / 1000).toFixed(1)} s`
+}
+
+// 时长：64 s、27 m、2 h 56 m
+export function duration(seconds: number | null): string {
+  if (seconds == null) return '—'
+  const s = Math.round(seconds)
+  if (s < 90) return `${s} s`
+  if (s < 3600) return `${Math.round(s / 60)} m`
+  const h = Math.floor(s / 3600)
+  const m = Math.round((s % 3600) / 60)
+  return m ? `${h} h ${m} m` : `${h} h`
+}
+
+// 每秒多少条
+export const rate = (x: number | null) =>
+  x == null ? '—' : `${x.toLocaleString('en-US', { maximumFractionDigits: x < 10 ? 1 : 0 })}/s`
+
+// Oct 29
+export const day = (iso: string) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+// Oct 29, 4:00 PM
+export const dayClock = (iso: string) => `${day(iso)}, ${clock(iso)}`
