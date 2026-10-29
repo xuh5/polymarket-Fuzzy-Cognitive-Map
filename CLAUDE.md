@@ -48,6 +48,7 @@ python -m pmdata.query.market_24h --market google      # 阶段 2 验收查询�
 python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 试跑归档（用测试 group，别占用正式的 pm-archiver；配合 PM_DATA_DIR 写到别处）
 python -m pmdata.metrics.run --group-id pm-metrics-test --warmup-hours 2 --duration 120   # 试跑实时指标（注意：会写进正式的 pm.metrics.* topic）
 python scripts/verify_book_replay.py [日期]             # 回放 bronze 核对本地订单簿（全量约 2.5 分钟、CPU 占满，尽量指定日期）
+python -m pmdata.health.lag --once                   # 打印各 consumer group 的消费积压（只读）
 python -m pmdata.api.app                               # 网站后端（127.0.0.1:8000，/docs 看接口）
 cd web && npm run dev                                  # 网站前端（localhost:5173，/api 转发给后端）；npm run build / npm run lint
 ```
@@ -69,13 +70,14 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/quality/`：数据质量检查。
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。
 - `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续模块按同样方式在 `src/pmdata/` 下加子包。
+- `src/pmdata/health/`：模块 5 管道健康（lag.py：消费积压）。
 - `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
 - `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink` 六个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink`、`health` 七个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -248,6 +250,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 下一步：模块 1 还缺深度图和滑点计算，都要上网站，所以先搭网站骨架。架构已和用户讨论过：新加 `src/pmdata/api/`（FastAPI，只读 Postgres + 读 pm.metrics.* 用 WebSocket 推给浏览器；每个实例自己的 group、不提交 offset，是广播不是分摊）、前端放根目录 `web/`；网站不读 warehouse.duckdb（单写者、每天 01:00 dbt 重建时锁住）；pm.metrics.* 格式要固定（`common/schemas.py`）。实时推送用轮询 Postgres 还是读 Kafka 还没定。订阅市场数量以后再扩。
   - 部署（用户 2026-10-28 定）：后端 FastAPI 跑在台式机 Docker 里，用 Cloudflare Tunnel 对外；前端 React 放 Cloudflare Pages。
   - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Depth quality 三个 tab。
+
+- 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

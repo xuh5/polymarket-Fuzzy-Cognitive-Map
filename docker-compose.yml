@@ -185,6 +185,22 @@ services:
     command: python -m pmdata.sink.pg_writer
     logging: *logging
 
+  # 管道健康：每分钟记录各 consumer group 的消费积压，写进 Postgres
+  health:
+    build: .
+    image: polymarket-app
+    container_name: health
+    restart: unless-stopped
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      PG_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: python -m pmdata.health.lag
+    logging: *logging
+
   # 看板：数据源和看板都写成文件放在 grafana/ 下（provisioning），重建容器不会丢
   grafana:
     image: grafana/grafana:12.1.1

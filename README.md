@@ -28,6 +28,7 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 | Order book | Pure-logic L2 order book rebuild from Kafka events. It does no I/O, so live processing and historical replay share the same code. | `src/pmdata/book/` |
 | Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). | `src/pmdata/metrics/` |
 | Serving and alerting | Idempotent upsert into Postgres; Grafana dashboard and alert rules provisioned from files. Alerts (pipeline stalled, market catalog stale) and failed Airflow tasks are sent to Discord. | `src/pmdata/sink/`, `grafana/` |
+| Pipeline health | Every minute, records each consumer group's lag (committed offset vs. end offset, per partition) into Postgres, for the status page and alerts. | `src/pmdata/health/` |
 | Orchestration | Airflow 3 (LocalExecutor) runs `dbt build` daily at 01:00 UTC, so models and tests are rebuilt on yesterday's complete data. dbt lives in its own virtualenv inside the Airflow image, and DuckDB is capped at 4 GB / 2 threads so the batch job cannot starve the live collectors. | `airflow/` |
 
 ## Design choices
