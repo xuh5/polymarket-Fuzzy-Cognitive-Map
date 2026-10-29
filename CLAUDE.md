@@ -49,7 +49,7 @@ python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 
 python -m pmdata.metrics.run --group-id pm-metrics-test --warmup-hours 2 --duration 120   # 试跑实时指标（注意：会写进正式的 pm.metrics.* topic）
 python scripts/verify_book_replay.py [日期]             # 回放 bronze 核对本地订单簿（全量约 2.5 分钟、CPU 占满，尽量指定日期）
 python -m pmdata.health.lag --once                   # 打印各 consumer group 的消费积压（只读）
-python -m pmdata.api.app                               # 网站后端（127.0.0.1:8000，/docs 看接口）
+python -m pmdata.api.app                               # 网站后端（127.0.0.1:8000，/docs 看接口）；正式跑在 api 容器里，宿主机试跑先停容器或换 --port
 cd web && npm run dev                                  # 网站前端（localhost:5173，/api 转发给后端）；npm run build / npm run lint
 ```
 
@@ -77,7 +77,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink`、`health` 七个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）八个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态

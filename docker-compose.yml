@@ -201,6 +201,24 @@ services:
     command: python -m pmdata.health.run
     logging: *logging
 
+  # 网站后端（FastAPI）：只读 Postgres 和 Redis，不连 Kafka
+  api:
+    build: .
+    image: polymarket-app
+    container_name: api
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      PG_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"        # 只给本机用；以后对外由 Cloudflare Tunnel 转发
+    command: python -m pmdata.api.app --host 0.0.0.0
+    logging: *logging
+
   # 看板：数据源和看板都写成文件放在 grafana/ 下（provisioning），重建容器不会丢
   grafana:
     image: grafana/grafana:12.1.1
