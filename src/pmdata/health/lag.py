@@ -43,6 +43,23 @@ create table if not exists health_consumer_lag (
     primary key (ts, group_id, topic, partition)
 );
 create index if not exists health_consumer_lag_group_ts on health_consumer_lag (group_id, ts);
+
+-- 吞吐量：两次记录之间 offset 涨了多少。已提交涨的 = 这个 group 处理了多少条，末尾涨的 = 这段时间 topic 写进了多少条。
+-- offset 只增不减（保留策略删旧数据、compact 都不改 offset），所以相减就是条数。
+-- archiver 每 5 分钟才提交一次，它的 processed 是一阵一阵的，看它要按 5 分钟以上的窗口加起来
+create or replace view health_throughput as
+with d as (
+    select ts, group_id, topic,
+           committed - lag(committed) over w as processed,
+           end_offset - lag(end_offset) over w as written,
+           extract(epoch from ts - lag(ts) over w) as seconds
+    from health_consumer_lag
+    window w as (partition by group_id, topic, partition order by ts)
+)
+select ts, group_id, topic, sum(processed) as processed, sum(written) as written, max(seconds) as seconds
+from d
+where seconds is not null
+group by ts, group_id, topic;
 """
 
 INSERT = ("insert into health_consumer_lag (ts, group_id, topic, partition, committed, end_offset, lag) "

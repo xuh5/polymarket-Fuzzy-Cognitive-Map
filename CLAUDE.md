@@ -251,7 +251,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 部署（用户 2026-10-28 定）：后端 FastAPI 跑在台式机 Docker 里，用 Cloudflare Tunnel 对外；前端 React 放 Cloudflare Pages。
   - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Depth quality 三个 tab。
 
-- 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。
+- 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。吞吐量不另写程序：视图 health_throughput 用相邻两次 offset 相减（processed = 已提交涨了多少，written = 末尾涨了多少）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
