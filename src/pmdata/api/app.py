@@ -77,6 +77,13 @@ def history(conn: Conn, market_id: str, minutes: Annotated[int, Query(ge=1, le=1
     return rows
 
 
+@app.get("/api/markets/{market_id}/trades")
+def trades(conn: Conn, market_id: str, minutes: Annotated[int, Query(ge=1, le=1440)] = 60,
+           bucket_seconds: Annotated[int, Query(ge=60, le=3600)] = 60):
+    """每格的成交笔数和看涨 / 看跌份数。没有成交是常态（冷门市场大部分分钟 0 成交），返回空列表，不报 404。"""
+    return queries.market_trades(conn, market_id, minutes, bucket_seconds)
+
+
 def tokens_or_404(conn, market_id):
     rows = queries.market_tokens(conn, market_id)
     if not rows:

@@ -71,6 +71,20 @@ def test_history_bucket():
     assert conn.calls[0][1] == (60, "0xM", 60)
 
 
+def test_trades_empty_is_not_404():
+    client, conn = client_with([])
+    r = client.get("/api/markets/0xM/trades?minutes=360&bucket_seconds=300")
+    assert r.status_code == 200
+    assert r.json() == []
+    assert conn.calls[0][1] == (300, "0xM", 360)
+
+
+def test_trades_bucket_at_least_one_minute():
+    client, conn = client_with([])
+    assert client.get("/api/markets/0xM/trades?bucket_seconds=15").status_code == 422
+    assert conn.calls == []
+
+
 def test_cors_allows_dev_frontend_only():
     client, _ = client_with([])
     ok = client.get("/api/markets", headers={"Origin": "http://localhost:5173"})

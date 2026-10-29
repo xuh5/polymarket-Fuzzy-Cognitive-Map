@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { fetchBook, fetchHistory, fetchMarket, polymarketUrl } from '../api'
+import { fetchBook, fetchHistory, fetchMarket, fetchTrades, polymarketUrl } from '../api'
 import BookLadder from '../components/BookLadder'
 import Change from '../components/Change'
 import DepthChart from '../components/DepthChart'
@@ -42,6 +42,10 @@ export default function MarketPage() {
 
   const market = usePolling(() => fetchMarket(marketId), 5000, marketId)
   const history = usePolling(() => fetchHistory(marketId, range.minutes, range.bucket), 30000,
+    `${marketId}/${range.label}`)
+  // 成交最细按分钟存，所以格子至少 1 分钟
+  const tradeBucket = Math.max(60, range.bucket)
+  const trades = usePolling(() => fetchTrades(marketId, range.minutes, tradeBucket), 30000,
     `${marketId}/${range.label}`)
   const book = usePolling(() => fetchBook(marketId, outcomeIndex), 2000, `${marketId}/${outcomeIndex}`)
 
@@ -116,11 +120,12 @@ export default function MarketPage() {
         <>
           <section>
             <div className="section-head">
-              <h2>{first.outcome} price <span className="muted">· mid with bid–ask band</span></h2>
+              <h2>{first.outcome} price <span className="muted">· mid with best bid / ask, volume</span></h2>
               <Segmented options={RANGES.map((r) => r.label)} value={range.label} label="Time range"
                 onChange={(l) => setRange(RANGES.find((r) => r.label === l)!)} />
             </div>
-            <div className="card chart-card"><PriceChart points={history.data ?? []} /></div>
+            <div className="card chart-card"><PriceChart key={`${marketId}/${range.label}`} points={history.data ?? []} bucketSeconds={range.bucket}
+              trades={trades.data ?? []} tradeBucketSeconds={tradeBucket} /></div>
           </section>
 
           <section>

@@ -32,6 +32,14 @@ export interface HistoryPoint {
   microprice: number | null
 }
 
+// 一格的成交，两个选项合并成 Yes 的视角（看涨 = 买 Yes / 卖 No），单位是份数
+export interface TradeBucket {
+  t: string
+  trades: number
+  bullish: number
+  bearish: number
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(BASE + path)
   if (!r.ok) throw new Error(`${path} 返回 ${r.status}`)
@@ -42,6 +50,8 @@ export const fetchMarkets = () => getJson<Market[]>('/api/markets')
 export const fetchHealth = () => getJson<Health>('/api/health')
 export const fetchHistory = (marketId: string, minutes: number, bucketSeconds: number) =>
   getJson<HistoryPoint[]>(`/api/markets/${marketId}/history?minutes=${minutes}&bucket_seconds=${bucketSeconds}`)
+export const fetchTrades = (marketId: string, minutes: number, bucketSeconds: number) =>
+  getJson<TradeBucket[]>(`/api/markets/${marketId}/trades?minutes=${minutes}&bucket_seconds=${bucketSeconds}`)
 
 export interface OutcomeStats {
   outcome: string

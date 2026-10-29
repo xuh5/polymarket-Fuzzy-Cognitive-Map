@@ -637,6 +637,35 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 .chart-card { padding: 16px; }
 .chart { position: relative; width: 100%; }
 .chart svg { display: block; }
+.chart-overlay { position: absolute; inset: 0; pointer-events: none; }
+
+/* 价格图左上角：鼠标所在时刻（或最新）的数值 */
+.price-readout {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.price-readout b { color: var(--ink); font-weight: 600; }
+.price-readout b.vol-up { color: var(--up); }
+.price-readout b.vol-down { color: var(--down); }
+.volume-empty {
+  position: absolute;
+  left: 0;
+  right: 60px;
+  bottom: 52px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
 
 .chart-empty {
   display: flex;
@@ -649,9 +678,6 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 .grid { stroke: var(--border); stroke-width: 1; }
 .axis { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
 .crosshair { stroke: var(--border-strong); stroke-width: 1; }
-.band { fill: var(--accent-soft); }
-.line-mid { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
-.dot-mid { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
 .mid-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .series-label { font-size: 12px; font-weight: 600; }
 .series-label.bids { fill: var(--up); }
@@ -689,7 +715,7 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 }
 
 .key-mid { background: var(--accent); height: 2px; vertical-align: 3px; }
-.key-band { background: var(--accent-soft); }
+.key-edge { background: var(--accent); opacity: 0.35; height: 1px; vertical-align: 3px; }
 
 /* ---------- 订单簿 ---------- */
 .book-grid {

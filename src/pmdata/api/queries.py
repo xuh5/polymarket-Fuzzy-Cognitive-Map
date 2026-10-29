@@ -56,6 +56,27 @@ def market_history(conn, market_id, minutes, bucket_seconds=1):
     ).fetchall()
 
 
+def market_trades(conn, market_id, minutes, bucket_seconds=60):
+    """某个市场过去 minutes 分钟的成交，按 bucket_seconds 一格汇总（只有有成交的格才有行）。
+
+    两个选项合并成第一个选项（Yes）的视角，和 Grafana 的「成交流向」一样：
+    看涨 = 主动买 Yes + 主动卖 No，看跌 = 主动卖 Yes + 主动买 No。单位是份数。
+    """
+    return conn.execute(
+        """
+        select date_bin(make_interval(secs => %s), tr.minute, timestamptz '2000-01-01') as t,
+               sum(tr.trades) as trades,
+               sum(case when t.outcome_index = 1 then tr.buy_volume else tr.sell_volume end) as bullish,
+               sum(case when t.outcome_index = 1 then tr.sell_volume else tr.buy_volume end) as bearish
+        from metrics_trades tr join tokens t using (asset_id)
+        where tr.market_id = %s and tr.minute > now() - make_interval(mins => %s)
+        group by 1
+        order by 1
+        """,
+        (bucket_seconds, market_id, minutes),
+    ).fetchall()
+
+
 def market_tokens(conn, market_id):
     """某个市场的所有选项（按 outcome_index 排），每个带最新一条盘口指标（过去 24 小时没有就是 null）。"""
     return conn.execute(

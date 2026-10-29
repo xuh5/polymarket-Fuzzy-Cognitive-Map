@@ -1,97 +1,170 @@
-import { useState } from 'react'
-import type { HistoryPoint } from '../api'
-import { ticks } from '../chart'
-import { cents, clock } from '../format'
-import { useWidth } from '../usePolling'
+import {
+  AreaSeries, ColorType, createChart, CrosshairMode, HistogramSeries, LineSeries, LineType, TickMarkType,
+  type IChartApi, type ISeriesApi, type Time, type UTCTimestamp,
+} from 'lightweight-charts'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { HistoryPoint, TradeBucket } from '../api'
+import { cents, clock, shares } from '../format'
 
-const H = 260
-const M = { top: 12, right: 12, bottom: 26, left: 44 }
+const H = 340
+const VOL_H = 80     // 下面成交量那一栏的高度
 
-// 中间价走势 + 买一到卖一之间的价差带。鼠标移上去显示那一刻的中间价、买一、卖一
-export default function PriceChart({ points }: { points: HistoryPoint[] }) {
-  const [ref, width] = useWidth<HTMLDivElement>()
-  const [hover, setHover] = useState<number | null>(null)
-  const data = points.filter((p) => p.mid != null)
+// 颜色取自 index.css 的 :root 变量，和页面其他地方保持一致
+const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+function alpha(hex: string, a: number) {
+  const n = parseInt(hex.slice(1), 16)
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
+}
 
-  if (data.length < 2) {
-    return <div ref={ref} className="chart-empty" style={{ height: H }}>Not enough data in this range yet</div>
+// 图表库按 UTC 显示时间；我们换成浏览器本地时间，和页面其他时间一致
+const toLocal = (t: Time) => new Date((t as number) * 1000)
+const toTime = (iso: string) => Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp
+
+// 图表库的横轴按点的序号等距排，不按时间；后端只返回盘口有变化的时间格，所以把中间缺的格补上，
+// 值沿用上一格（盘口没变，价格就停在那里），横轴才和真实时间成比例
+function fillBuckets(points: HistoryPoint[], bucketSeconds: number) {
+  const out: (HistoryPoint & { t: UTCTimestamp })[] = []
+  for (const p of points) {
+    const t = toTime(p.second)
+    const prev = out[out.length - 1]
+    for (let f = prev ? prev.t + bucketSeconds : t; f < t; f += bucketSeconds) {
+      out.push({ ...prev, t: f as UTCTimestamp, second: new Date(f * 1000).toISOString() })
+    }
+    out.push({ ...p, t })
   }
+  return out
+}
 
-  const W = Math.max(width, 300)
-  const iw = W - M.left - M.right
-  const ih = H - M.top - M.bottom
-  const ts = data.map((p) => new Date(p.second).getTime())
-  const t0 = ts[0]
-  const t1 = ts[ts.length - 1]
-  const vals = data.flatMap((p) => [p.best_bid, p.best_ask, p.mid]).filter((v): v is number => v != null)
-  let lo = Math.min(...vals)
-  let hi = Math.max(...vals)
-  if (hi - lo < 0.02) {           // 至少 2¢ 的纵向范围，免得小抖动被放大
-    const c = (hi + lo) / 2
-    lo = c - 0.01
-    hi = c + 0.01
-  }
-  const pad = (hi - lo) * 0.08
-  lo = Math.max(0, lo - pad)
-  hi = Math.min(1, hi + pad)
+// 上栏：中间价走势（面积）+ 买一、卖一两条细线；下栏：每格成交量，看涨往上、看跌往下。
+// 滚轮缩放、拖动平移，双击时间轴复位；左上角显示鼠标所在时刻（不在图上时为最新 / 整段合计）的数值
+export default function PriceChart({ points, bucketSeconds, trades, tradeBucketSeconds }: {
+  points: HistoryPoint[]
+  bucketSeconds: number
+  trades: TradeBucket[]
+  tradeBucketSeconds: number   // 成交的格子（至少 1 分钟），是 bucketSeconds 的整数倍，时间点对得上
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  const chart = useRef<IChartApi | null>(null)
+  const series = useRef<{
+    mid: ISeriesApi<'Area'>; bid: ISeriesApi<'Line'>; ask: ISeriesApi<'Line'>
+    bull: ISeriesApi<'Histogram'>; bear: ISeriesApi<'Histogram'>
+  } | null>(null)
+  const fitted = useRef(false)
+  const [hover, setHover] = useState<number | null>(null)   // 鼠标所在的时间（秒）
 
-  const x = (t: number) => M.left + ((t - t0) / (t1 - t0 || 1)) * iw
-  const y = (v: number) => M.top + (1 - (v - lo) / (hi - lo)) * ih
+  // 图表只建一次，数据变了只换数据：重建会丢掉用户的缩放位置
+  useEffect(() => {
+    const accent = cssVar('--accent')
+    const c = createChart(box.current!, {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: 'transparent' },
+        textColor: cssVar('--muted'),
+        fontFamily: "'Inter Variable', system-ui, sans-serif",
+        fontSize: 11,
+        panes: { separatorColor: cssVar('--border'), separatorHoverColor: 'transparent', enableResize: false },
+      },
+      grid: { vertLines: { visible: false }, horzLines: { color: cssVar('--border') } },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.18, bottom: 0.08 } },
+      timeScale: {
+        borderVisible: false, timeVisible: true, fixLeftEdge: true, fixRightEdge: true,
+        tickMarkFormatter: (t: Time, type: TickMarkType) => (type <= TickMarkType.DayOfMonth
+          ? toLocal(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          : clock(toLocal(t).toISOString())),
+      },
+      localization: {
+        timeFormatter: (t: Time) => toLocal(t).toLocaleString('en-US',
+          { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }),
+      },
+      crosshair: {
+        mode: CrosshairMode.Magnet,
+        vertLine: { color: cssVar('--border-strong'), labelBackgroundColor: cssVar('--ink-2') },
+        horzLine: { color: cssVar('--border-strong'), labelBackgroundColor: cssVar('--ink-2') },
+      },
+      handleScroll: { vertTouchDrag: false },
+    })
+    // 价格格式按系列设：两栏单位不同（美分 / 份数），不能用全局的 localization.priceFormatter
+    const price = { type: 'custom', formatter: cents, minMove: 0.001 } as const
+    const edge = { color: alpha(accent, 0.35), lineWidth: 1, lineType: LineType.WithSteps, priceFormat: price,
+      priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false } as const
+    const volume = { priceFormat: { type: 'custom', formatter: (v: number) => shares(Math.abs(v)), minMove: 1 },
+      priceLineVisible: false, lastValueVisible: false } as const
+    series.current = {
+      bid: c.addSeries(LineSeries, edge),
+      ask: c.addSeries(LineSeries, edge),
+      mid: c.addSeries(AreaSeries, {
+        lineColor: accent, lineWidth: 2, lineType: LineType.WithSteps, topColor: alpha(accent, 0.18), bottomColor: alpha(accent, 0),
+        priceFormat: price, priceLineVisible: false, crosshairMarkerBorderColor: cssVar('--surface'),
+        // 纵向至少 2¢，免得小抖动被放大成大起大落
+        autoscaleInfoProvider: (original: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
+          const r = original()
+          if (!r || r.priceRange.maxValue - r.priceRange.minValue >= 0.02) return r
+          const mid = (r.priceRange.maxValue + r.priceRange.minValue) / 2
+          return { ...r, priceRange: { minValue: mid - 0.01, maxValue: mid + 0.01 } }
+        },
+      }),
+      bull: c.addSeries(HistogramSeries, { ...volume, color: cssVar('--up') }, 1),
+      bear: c.addSeries(HistogramSeries, { ...volume, color: cssVar('--down') }, 1),
+    }
+    c.panes()[1].setHeight(VOL_H)
+    c.subscribeCrosshairMove((p) => setHover(p.time == null ? null : (p.time as number)))
+    chart.current = c
+    return () => {
+      c.remove()
+      chart.current = null
+      series.current = null
+    }
+  }, [])
 
-  const mid = data.map((p, i) => `${i ? 'L' : 'M'}${x(ts[i]).toFixed(1)},${y(p.mid!).toFixed(1)}`).join('')
-  const banded = data.map((p, i) => ({ p, t: ts[i] })).filter(({ p }) => p.best_bid != null && p.best_ask != null)
-  const band = banded.length > 1
-    ? banded.map(({ p, t }, i) => `${i ? 'L' : 'M'}${x(t).toFixed(1)},${y(p.best_ask!).toFixed(1)}`).join('') +
-      banded.slice().reverse().map(({ p, t }) => `L${x(t).toFixed(1)},${y(p.best_bid!).toFixed(1)}`).join('') + 'Z'
-    : ''
+  const filled = useMemo(() => fillBuckets(points, bucketSeconds), [points, bucketSeconds])
 
-  const yTicks = ticks(lo, hi, 4)
-  const xTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => t0 + f * (t1 - t0))
+  // 值是 null（盘口不可用）的格传「空白点」，线在这里断开，不连成一条假线
+  useEffect(() => {
+    const s = series.current
+    if (!s) return
+    const line = (pick: (p: HistoryPoint) => number | null) =>
+      filled.map((p) => (pick(p) == null ? { time: p.t } : { time: p.t, value: pick(p)! }))
+    s.mid.setData(line((p) => p.mid))
+    s.bid.setData(line((p) => p.best_bid))
+    s.ask.setData(line((p) => p.best_ask))
+    // 价格范围外的成交不画：横轴上没有对应的格，会把时间轴撑歪
+    const first = filled[0]?.t ?? 0
+    const last = filled[filled.length - 1]?.t ?? 0
+    const inRange = trades.map((b) => ({ ...b, time: toTime(b.t) })).filter((b) => b.time >= first && b.time <= last)
+    s.bull.setData(inRange.filter((b) => b.bullish > 0).map((b) => ({ time: b.time, value: b.bullish })))
+    s.bear.setData(inRange.filter((b) => b.bearish > 0).map((b) => ({ time: b.time, value: -b.bearish })))
+    // 只在第一次有数据时铺满；之后每 30 秒刷新不动用户的缩放
+    if (!fitted.current && filled.some((p) => p.mid != null)) {
+      chart.current!.timeScale().fitContent()
+      fitted.current = true
+    }
+  }, [filled, trades])
 
-  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const box = e.currentTarget.getBoundingClientRect()
-    const t = t0 + ((e.clientX - box.left - M.left) / iw) * (t1 - t0)
-    let best = 0
-    ts.forEach((v, i) => { if (Math.abs(v - t) < Math.abs(ts[best] - t)) best = i })
-    setHover(best)
-  }
+  const withMid = points.filter((p) => p.mid != null)
+  const shown = (hover != null && filled.find((p) => p.t === hover)) || withMid[withMid.length - 1]
+  // 成交：鼠标所在的那一格；不在图上时是整段合计
+  const vol = hover != null
+    ? trades.find((b) => toTime(b.t) === Math.floor(hover / tradeBucketSeconds) * tradeBucketSeconds)
+    : trades.reduce((a, b) => ({ ...a, trades: a.trades + b.trades, bullish: a.bullish + b.bullish,
+      bearish: a.bearish + b.bearish }), { t: '', trades: 0, bullish: 0, bearish: 0 })
 
-  const h = hover == null ? null : data[hover]
-  const hx = hover == null ? 0 : x(ts[hover])
   return (
-    <div ref={ref} className="chart">
-      <svg width={W} height={H} onMouseMove={onMove} onMouseLeave={() => setHover(null)}
-        role="img" aria-label="Mid price with bid–ask band over time">
-        {yTicks.map((v) => (
-          <g key={v}>
-            <line x1={M.left} x2={W - M.right} y1={y(v)} y2={y(v)} className="grid" />
-            <text x={M.left - 8} y={y(v)} className="axis" textAnchor="end" dominantBaseline="middle">
-              {cents(v)}
-            </text>
-          </g>
-        ))}
-        {xTicks.map((t, i) => (
-          <text key={t} x={x(t)} y={H - 6} className="axis"
-            textAnchor={i === 0 ? 'start' : i === xTicks.length - 1 ? 'end' : 'middle'}>
-            {clock(new Date(t).toISOString())}
-          </text>
-        ))}
-        {band && <path d={band} className="band" />}
-        <path d={mid} className="line-mid" />
-        {h && (
-          <>
-            <line x1={hx} x2={hx} y1={M.top} y2={M.top + ih} className="crosshair" />
-            <circle cx={hx} cy={y(h.mid!)} r={4} className="dot-mid" />
-          </>
-        )}
-      </svg>
-      {h && (
-        <div className="tooltip" style={{ left: Math.min(hx + 12, W - 150), top: M.top }}>
-          <div className="tt-time">{clock(h.second)}</div>
-          <div><span className="key key-mid" />Mid <b>{cents(h.mid)}</b></div>
-          <div><span className="key key-band" />Bid / Ask <b>{cents(h.best_bid)} / {cents(h.best_ask)}</b></div>
+    <div className="chart" style={{ height: H }}>
+      <div ref={box} style={{ height: H }} />
+      {shown && (
+        <div className="price-readout">
+          <span><span className="key key-mid" />Mid <b>{cents(shown.mid)}</b></span>
+          <span><span className="key key-edge" />Bid / Ask <b>{cents(shown.best_bid)} / {cents(shown.best_ask)}</b></span>
+          <span>
+            {hover != null ? 'Volume' : 'Volume (range)'}{' '}
+            <b className="vol-up">▲ {shares(vol?.bullish ?? 0)}</b> <b className="vol-down">▼ {shares(vol?.bearish ?? 0)}</b>
+            {' '}<span className="muted">shares</span>
+          </span>
+          <span className="tt-time">{hover != null ? clock(shown.second) : 'Latest'}</span>
         </div>
       )}
+      {withMid.length >= 2 && trades.length === 0 && <div className="volume-empty">No trades in this range</div>}
+      {withMid.length < 2 && <div className="chart-empty chart-overlay">Not enough data in this range yet</div>}
     </div>
   )
 }
