@@ -17,8 +17,8 @@ const PAGE_SIZES = [10, 25, 50]
 // 超过这么久没更新的市场（多半已移出订阅名单）淡化显示
 const STALE_SECONDS = 15 * 60
 
-// 鼠标在市场名字上停多久才弹出迷你订单簿（太短的话扫过表格时会一直弹）
-const HOVER_DELAY_MS = 2000
+// 鼠标在市场名字上停多久才弹出迷你订单簿（和 GitHub、Wikipedia 的悬停预览差不多）
+const HOVER_DELAY_MS = 600
 // 离开市场名字后小窗口多留一会儿，够把鼠标移进小窗口里
 const CLOSE_GRACE_MS = 150
 const PREVIEW_HALF_HEIGHT = 170   // 卡片大约一半高，用来让它不超出窗口上下边
