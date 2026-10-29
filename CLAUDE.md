@@ -70,7 +70,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/quality/`：数据质量检查。
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。
 - `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续模块按同样方式在 `src/pmdata/` 下加子包。
-- `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟）。
+- `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟；quality.py 乱序/盘口对不上）。
 - `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
 - `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
@@ -251,7 +251,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 部署（用户 2026-10-28 定）：后端 FastAPI 跑在台式机 Docker 里，用 Cloudflare Tunnel 对外；前端 React 放 Cloudflare Pages。
   - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Depth quality 三个 tab。
 
-- 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。吞吐量不另写程序：视图 health_throughput 用相邻两次 offset 相减（processed = 已提交涨了多少，written = 末尾涨了多少）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。断线重连：health 用 group pm-health 读 pm.raw.clob 的缺口标记，按 conn_id 一次重连一行写表 health_reconnects（永久保留；「加入订阅名单」不算）。延迟：每分钟从 metrics_book 汇总四段（交易所→收到、收到→算完、算完→入库、端到端）的 p50/p99 写表 health_latency（按 inserted_at 归分钟，永久保留，启动时补算现存 7 天）。
+- 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。吞吐量不另写程序：视图 health_throughput 用相邻两次 offset 相减（processed = 已提交涨了多少，written = 末尾涨了多少）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。断线重连：health 用 group pm-health 读 pm.raw.clob 的缺口标记，按 conn_id 一次重连一行写表 health_reconnects（永久保留；「加入订阅名单」不算）。延迟：每分钟从 metrics_book 汇总四段（交易所→收到、收到→算完、算完→入库、端到端）的 p50/p99 写表 health_latency（按 inserted_at 归分钟，永久保留，启动时补算现存 7 天）。行情质量：health 自己维护一份订单簿（启动预热 24 小时，复用 metrics 的 plan_start），每分钟写表 health_stream_quality——乱序（同市场 price_change 交易所时间倒退，交易所本身一天约 180 次、多为 1～7ms；只比 price_change 之间，和 best_bid_ask 比全是假乱序）、盘口对不上（本地买一卖一 vs 交易所带的，代表漏消息）、盘口不可用时忽略的变化。health 的 Postgres 连接用 autocommit（2026-10-29 踩坑：单独一句查询隐式开事务没提交，之后的写入全变成 savepoint 没落库，还锁住了表）。
 - 2026-10-29 补回的重连记录发现：10-26 断网后 SSL 证书校验失败断断续续持续到 10-27 16:21（18 次，每次 16～125 秒）；10-29 08:46 台式机重启后 Docker 到 11:42 才起来，停了约 3 小时（Grafana 也没起来，所以没告警）。
 
 ## 以后的想法（暂不做）
