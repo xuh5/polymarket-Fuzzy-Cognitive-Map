@@ -120,7 +120,7 @@ function JumpWhat({ s }: { s: Signal }) {
   return (
     <div className="sub-line">
       <span>{MOVE_LABEL[s.move_type]}</span>
-      {s.reversals > 0 && <span title="Times the move flipped direction">↺ {s.reversals}</span>}
+      {s.reversals > 0 && <span title="Times the price changed direction during the move">· flipped {s.reversals}×</span>}
     </div>
   )
 }
