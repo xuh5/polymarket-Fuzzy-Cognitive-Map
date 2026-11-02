@@ -9,13 +9,14 @@
 import argparse
 import json
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 import redis
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -23,6 +24,7 @@ from psycopg_pool import ConnectionPool
 from pmdata.api import queries, status
 from pmdata.book.cache import KEY_PREFIX
 from pmdata.common.config import API_CORS_ORIGINS, PG_DSN, REDIS_URL
+from pmdata.replay import bronze as replay_bronze
 
 # open=False：导入模块时不连数据库（测试不需要 Postgres），启动服务时在 lifespan 里再打开
 pool = ConnectionPool(PG_DSN, min_size=1, max_size=10, kwargs={"row_factory": dict_row}, open=False)
@@ -41,6 +43,8 @@ app = FastAPI(title="Polymarket 订单簿分析 API", lifespan=lifespan)
 
 # 前端放在 Cloudflare Pages，和后端不是同一个域名，浏览器要后端明确允许才让网页调用（CORS）
 app.add_middleware(CORSMiddleware, allow_origins=API_CORS_ORIGINS, allow_methods=["GET"])
+# 回放一次返回几千条变化，JSON 重复度高，压缩后小很多
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 def get_conn():
@@ -124,6 +128,24 @@ def book(conn: Conn, r: Redis, market_id: str, outcome_index: Annotated[int, Que
     return {**base, "available": True, "exchange_ts": b["exchange_ts"], "written_at": b["written_at"],
             "bids": [[float(p), float(s)] for p, s in b["bids"]],
             "asks": [[float(p), float(s)] for p, s in b["asks"]]}
+
+
+@app.get("/api/markets/{market_id}/replay")
+def replay(conn: Conn, market_id: str, start: datetime, minutes: Annotated[int, Query(ge=1, le=60)] = 20):
+    """回放：start 起 minutes 分钟内两个选项的订单簿和成交——起点那一刻的完整订单簿 + 之后每一次变化（毫秒级）。
+
+    格式见 pmdata.replay.timeline。数据来自 bronze，归档有几分钟延迟：这段还没归档完时 complete = false，
+    只有已归档的部分。start 不带时区时按 UTC。
+    """
+    rows = tokens_or_404(conn, market_id)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    end = start + timedelta(minutes=minutes)
+    result, complete = replay_bronze.replay(market_id, {r["asset_id"]: r["outcome_index"] for r in rows}, start, end)
+    return {"market_id": market_id, "start": start, "end": end, "complete": complete,
+            "outcomes": [{"outcome_index": r["outcome_index"], "outcome": r["outcome"], "asset_id": r["asset_id"],
+                          "initial": result["initial"][r["outcome_index"]]} for r in rows],
+            "events": result["events"]}
 
 
 @app.get("/api/status")

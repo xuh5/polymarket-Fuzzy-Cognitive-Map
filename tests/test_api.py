@@ -155,3 +155,28 @@ def test_book_redis_down_503():
     client, _ = client_with_redis(TOKENS, FakeRedis(fail=True))
     assert client.get("/api/markets/0xM/book").status_code == 503
 
+
+
+def test_replay_passes_tokens_and_window(monkeypatch):
+    from pmdata.api import app as app_module
+    seen = {}
+
+    def fake(market, tokens, start, end):
+        seen.update(market=market, tokens=tokens, start=start, end=end)
+        return {"initial": {1: None, 2: {"bids": [[0.5, 3.0]], "asks": []}}, "events": []}, True
+
+    monkeypatch.setattr(app_module.replay_bronze, "replay", fake)
+    client, _ = client_with(TOKENS)
+    j = client.get("/api/markets/0xM/replay?start=2026-10-29T12:00:00&minutes=15").json()
+    assert seen["tokens"] == {"Y": 1, "N": 2}
+    assert seen["start"] == datetime(2026, 10, 29, 12, 0, tzinfo=UTC)   # 不带时区按 UTC
+    assert seen["end"] == datetime(2026, 10, 29, 12, 15, tzinfo=UTC)
+    assert j["complete"] is True
+    assert [(o["outcome"], o["initial"]) for o in j["outcomes"]] == [
+        ("Yes", None), ("No", {"bids": [[0.5, 3.0]], "asks": []})]
+
+
+def test_replay_window_at_most_an_hour():
+    client, conn = client_with(TOKENS)
+    assert client.get("/api/markets/0xM/replay?start=2026-10-29T12:00:00Z&minutes=61").status_code == 422
+    assert conn.calls == []

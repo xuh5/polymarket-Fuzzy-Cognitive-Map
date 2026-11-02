@@ -201,7 +201,7 @@ services:
     command: python -m pmdata.health.run
     logging: *logging
 
-  # 网站后端（FastAPI）：只读 Postgres 和 Redis，不连 Kafka
+  # 网站后端（FastAPI）：只读 Postgres、Redis 和 bronze（回放用），不连 Kafka
   api:
     build: .
     image: polymarket-app
@@ -214,6 +214,9 @@ services:
       PG_HOST: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       REDIS_URL: redis://redis:6379/0
+      PM_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data:ro          # 只读：回放从 bronze 读原始消息
     ports:
       - "127.0.0.1:8000:8000"        # 只给本机用；以后对外由 Cloudflare Tunnel 转发
     command: python -m pmdata.api.app --host 0.0.0.0

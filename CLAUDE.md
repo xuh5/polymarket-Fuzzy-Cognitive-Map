@@ -71,13 +71,13 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。
 - `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续模块按同样方式在 `src/pmdata/` 下加子包。
 - `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟；quality.py 乱序/盘口对不上）。
-- `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL、`status.py` Status 页面：读 health_* 表算总体状态/可用率/事故）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
+- `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL、`status.py` Status 页面：读 health_* 表算总体状态/可用率/事故）。`src/pmdata/replay/`：模块 3 回放（`timeline.py` 纯逻辑，`bronze.py` 读 bronze）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
 - `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）八个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`，`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）八个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -257,6 +257,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - 2026-10-29 补回的重连记录发现：10-26 断网后 SSL 证书校验失败断断续续持续到 10-27 16:21（18 次，每次 16～125 秒）；10-29 08:46 台式机重启后 Docker 到 11:42 才起来，停了约 3 小时（Grafana 也没起来，所以没告警）。
 - Status 页面（2026-10-29，用户同意的布局）：总体状态条、管道图、四个关键数字、7 天每小时可用率（采集器 / 实时指标 / 归档）、延迟/吞吐/积压图（1h/24h/7d）、超过 1 分钟的事故（同类隔不到 30 分钟合并）。接口 `/api/status`、`/api/status/charts`。积压图不放 archive（5 分钟一提交，量级不同）。
 - **模块 5 完成（2026-10-29）**。下一个：模块 3 跳动回放。
+- 模块 3（2026-11-02，用户同意）：顺序改为先做「任选时间回放」，跳动的定义等用户看过回放再定（统计过：5 分钟变化 ≥10 个点约 13 次/天，约 4 成前 5 分钟无成交；metrics 的价格变化会跨退订期比较，重新加入订阅名单时出现假跳动，定义时要排除）。
+  不另存快照：交易所每笔成交、每次重连都推完整清单（book），回放从 bronze 里上一份 book 开始还原，容器里首次 1～5 秒、缓存 0.2 秒。接口 `/api/markets/{id}/replay?start=&minutes=`（≤60）返回起点订单簿 + 之后每一次变化（毫秒级，用户选的，不按秒切帧，否则看不到短暂挂撤单）；没归档完 complete=false 不缓存。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
