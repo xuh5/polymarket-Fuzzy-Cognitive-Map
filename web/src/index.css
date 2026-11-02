@@ -1191,12 +1191,13 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 .replay-start input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 .replay-chart { cursor: pointer; touch-action: none; user-select: none; }
-.replay-mid { fill: none; stroke: var(--accent); stroke-width: 2; }
-.replay-edge { fill: none; stroke: var(--accent); stroke-opacity: 0.35; stroke-width: 1; }
-.trade-dot { stroke: var(--surface); stroke-width: 1.5; }
-.trade-dot.buy { fill: var(--up); }
-.trade-dot.sell { fill: var(--down); }
-.replay-future { fill: var(--surface); opacity: 0.55; pointer-events: none; }
+.replay-band { fill: var(--accent); fill-opacity: 0.16; }
+.replay-mid { fill: none; stroke: var(--accent); stroke-width: 1.75; stroke-linejoin: round; }
+.replay-ahead { opacity: 0.5; }
+.trade-dot .dot { stroke: var(--surface); stroke-width: 2; }
+.trade-dot .halo { opacity: 0.22; }
+.trade-dot.buy { fill: var(--good); }
+.trade-dot.sell { fill: var(--crit); }
 .playhead { stroke: var(--ink); stroke-width: 1.5; pointer-events: none; }
 
 .player {

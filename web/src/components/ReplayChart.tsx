@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { PricePoint } from '../replay'
 import { ticks } from '../chart'
 import { cents, clock } from '../format'
@@ -8,7 +9,8 @@ const M = { top: 12, right: 12, bottom: 26, left: 48 }
 
 export interface TradeDot { t: number; price: number; side: 'BUY' | 'SELL' }
 
-// 回放的价格图：整段的买一、卖一、中间价（阶梯线）+ 成交点；竖线是播放头，点或拖动跳到那一刻。
+// 回放的价格图：买一到卖一之间填成一条带子（价差），中间价是阶梯线，加上成交点；竖线是播放头，点或拖动跳到那一刻。
+// 播放头左边（已经放过）颜色深，右边（还没放到）颜色浅。
 // 不用 Lightweight Charts：它的时间最细到秒，回放要毫秒
 export default function ReplayChart({ start, end, points, trades, t, onSeek }: {
   start: number
@@ -19,6 +21,7 @@ export default function ReplayChart({ start, end, points, trades, t, onSeek }: {
   onSeek: (t: number) => void
 }) {
   const [ref, width] = useWidth<HTMLDivElement>()
+  const clip = useId()
   const W = Math.max(width, 280)
   const iw = W - M.left - M.right
   const ih = H - M.top - M.bottom
@@ -49,6 +52,22 @@ export default function ReplayChart({ start, end, points, trades, t, onSeek }: {
     })
     return d
   }
+  // 价差带：买一卖一都有的连续一段画成一块（沿卖一往右，再沿买一往回走），断开的地方分成几块
+  const band = () => {
+    const runs: { x0: number; x1: number; bid: number; ask: number }[][] = []
+    let run: (typeof runs)[number] | null = null
+    points.forEach((p, i) => {
+      if (p.bid == null || p.ask == null) { run = null; return }
+      if (!run) { run = []; runs.push(run) }
+      const next = i + 1 < points.length ? points[i + 1].t : end
+      run.push({ x0: x(p.t), x1: x(Math.min(next, end)), bid: y(p.bid), ask: y(p.ask) })
+    })
+    return runs.map((r) =>
+      `M${r[0].x0.toFixed(1)},${r[0].ask.toFixed(1)}`
+      + r.map((g) => `V${g.ask.toFixed(1)}H${g.x1.toFixed(1)}`).join('')
+      + [...r].reverse().map((g) => `V${g.bid.toFixed(1)}H${g.x0.toFixed(1)}`).join('') + 'Z',
+    ).join('')
+  }
   const mid = (p: PricePoint) => (p.bid != null && p.ask != null ? (p.bid + p.ask) / 2 : null)
 
   const seek = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -76,14 +95,24 @@ export default function ReplayChart({ start, end, points, trades, t, onSeek }: {
             {clock(new Date(v).toISOString())}
           </text>
         ))}
-        <path d={step((p) => p.bid)} className="replay-edge" />
-        <path d={step((p) => p.ask)} className="replay-edge" />
-        <path d={step(mid)} className="replay-mid" />
-        {trades.map((d, i) => (
-          <circle key={i} cx={x(d.t)} cy={y(d.price)} r={4} className={`trade-dot ${d.side === 'BUY' ? 'buy' : 'sell'}`} />
+        <defs>
+          <clipPath id={`${clip}-played`}><rect x={M.left} y={0} width={Math.max(0, px - M.left)} height={H} /></clipPath>
+          <clipPath id={`${clip}-ahead`}><rect x={px} y={0} width={Math.max(0, M.left + iw - px)} height={H} /></clipPath>
+        </defs>
+        {/* 同一份图画两遍，按播放头左右裁开：左边深、右边浅 */}
+        {(['played', 'ahead'] as const).map((part) => (
+          <g key={part} clipPath={`url(#${clip}-${part})`} className={`replay-${part}`}>
+            <path d={band()} className="replay-band" />
+            <path d={step(mid)} className="replay-mid" />
+          </g>
         ))}
-        {/* 播放头之后的部分淡一点：已经放过的 / 还没放到的一眼分开 */}
-        <rect x={px} y={M.top} width={Math.max(0, M.left + iw - px)} height={ih} className="replay-future" />
+        {/* 成交点画在遮罩上面，不跟着变淡；外面一圈同色光晕，线很密时也一眼看得到 */}
+        {trades.map((d, i) => (
+          <g key={i} className={`trade-dot ${d.side === 'BUY' ? 'buy' : 'sell'}`}>
+            <circle cx={x(d.t)} cy={y(d.price)} r={10} className="halo" />
+            <circle cx={x(d.t)} cy={y(d.price)} r={5.5} className="dot" />
+          </g>
+        ))}
         <line x1={px} x2={px} y1={M.top - 4} y2={M.top + ih} className="playhead" />
       </svg>
     </div>
