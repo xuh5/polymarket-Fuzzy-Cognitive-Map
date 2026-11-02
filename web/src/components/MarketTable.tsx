@@ -35,7 +35,7 @@ function pageList(page: number, pages: number): (number | '…')[] {
 export default function MarketTable({ markets }: { markets: Market[] }) {
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('moves')
-  const [pageSize, setPageSize] = useState(25)
+  const [pageSize, setPageSize] = useState(10)
   const [page, setPage] = useState(1)
   const navigate = useNavigate()
 
