@@ -3,7 +3,8 @@
 一个 consumer（group = pm-pg-sink）读四个 topic：
 - pm.metrics.book   → 表 metrics_book（主键 asset_id + second）
 - pm.metrics.trades → 表 metrics_trades（主键 asset_id + minute）
-- pm.raw.markets    → 表 tokens（asset_id → 市场问题、Yes/No），看板上显示市场名字用
+- pm.raw.markets    → 表 tokens（asset_id → 市场问题、Yes/No），看板上显示市场名字用；
+                      顺便按问题文字给市场打标签 → 表 market_labels（话题、公司，规则见 pmdata.topics.rules）
 - pm.events         → 表 signal_events（主键 event_id），网站 Signals 页用；永久保留
 
 可靠性：每批先写数据库、提交事务，成功后才提交 Kafka offset（at-least-once）。
@@ -34,6 +35,7 @@ from pmdata.common.config import (
 from pmdata.common.log import setup_logging
 from pmdata.common.timeutil import parse_time
 from pmdata.ingest.select_markets import get_token_ids
+from pmdata.topics.rules import classify
 
 log = logging.getLogger("pg-sink")
 
@@ -49,6 +51,7 @@ BOOK_COLS = ["asset_id", "second", "market_id", "best_bid", "best_ask", "mid", "
 TRADE_COLS = ["asset_id", "minute", "market_id", "trades", "volume", "notional", "buy_volume", "sell_volume",
               "exchange_ts", "received_at", "computed_at"]
 TOKEN_COLS = ["asset_id", "market_id", "question", "outcome", "outcome_index", "slug", "end_date"]
+LABEL_COLS = ["market_id", "topic", "company", "source"]
 # 跳动事件，字段含义见 pmdata.signals.detector
 EVENT_TIMES = ["start_at", "peak_at", "last_at", "book_since"]
 EVENT_FLOATS = ["mid_before", "mid_peak", "change_points", "change_logodds", "bid_before", "ask_before", "bid_peak",
@@ -102,6 +105,16 @@ create table if not exists tokens (
 );
 create index if not exists tokens_market on tokens (market_id);
 
+-- 市场标签。source = 谁打的：rules（pmdata.topics.rules，按问题文字）；以后别的打法（ai / manual）写同一张表，
+-- 规则不覆盖它们
+create table if not exists market_labels (
+    market_id text primary key,
+    topic text,
+    company text,
+    source text not null,
+    updated_at timestamptz not null default now()
+);
+
 create table if not exists signal_events (
     event_id text primary key,             -- 市场 ID:开始那一秒
     kind text not null,                    -- 目前只有 jump
@@ -153,6 +166,10 @@ def token_rows(market):
             for i, t in enumerate(tokens, 1)]
 
 
+def label_row(market_id, question):
+    return (market_id, *classify(question), "rules")
+
+
 def upsert_sql(table, cols, keys, extra_set=""):
     updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c not in keys)
     return (f"insert into {table} ({', '.join(cols)}) values ({', '.join(['%s'] * len(cols))}) "
@@ -163,6 +180,9 @@ UPSERTS = {
     "metrics_book": upsert_sql("metrics_book", BOOK_COLS, ["asset_id", "second"], ", inserted_at = now()"),
     "metrics_trades": upsert_sql("metrics_trades", TRADE_COLS, ["asset_id", "minute"], ", inserted_at = now()"),
     "tokens": upsert_sql("tokens", TOKEN_COLS, ["asset_id"], ", updated_at = now()"),
+    # 只覆盖规则自己打的标签，别的来源（ai / manual）优先
+    "market_labels": upsert_sql("market_labels", LABEL_COLS, ["market_id"], ", updated_at = now()")
+    + " where market_labels.source = 'rules'",
     # 重启后上游可能重发旧版本（比如 final 之后又来一条 open）：状态只往前走，不倒退
     "signal_events": upsert_sql("signal_events", EVENT_COLS, ["event_id"], ", updated_at = now()")
     + f" where array_position({STATUS_ORDER}, excluded.status) >= array_position({STATUS_ORDER}, signal_events.status)",
@@ -191,8 +211,11 @@ def to_rows(msgs):
             row = event_row(rec)
             rows["signal_events"][row[0]] = row
         elif topic == TOPIC_MARKETS:
-            for row in token_rows(rec["payload"]):
+            m = rec["payload"]
+            for row in token_rows(m):
                 rows["tokens"][row[0]] = row
+            if m.get("conditionId"):
+                rows["market_labels"][m["conditionId"]] = label_row(m["conditionId"], m.get("question"))
     return rows
 
 
@@ -201,6 +224,15 @@ def write(conn, rows):
         for table, by_key in rows.items():
             if by_key:
                 cur.executemany(UPSERTS[table], list(by_key.values()))
+
+
+def relabel_all(conn):
+    """启动时按现在的规则把数据库里所有市场重新打一遍标签：规则改了、已经关闭（不会再收到消息）的老市场也跟着更新。"""
+    # 查询也放在事务里：连接不是 autocommit，单独一句查询会隐式开一个事务，之后的写入就都没提交
+    with conn.transaction(), conn.cursor() as cur:
+        markets = cur.execute("select distinct on (market_id) market_id, question from tokens").fetchall()
+        cur.executemany(UPSERTS["market_labels"], [label_row(m, q) for m, q in markets])
+    log.info("按规则重新打标签：%d 个市场", len(markets))
 
 
 def cleanup(conn):
@@ -221,6 +253,7 @@ def main():
     conn = psycopg.connect(PG_DSN)
     with conn.transaction():
         conn.execute(SCHEMA)
+    relabel_all(conn)
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP,
         "group.id": args.group_id,

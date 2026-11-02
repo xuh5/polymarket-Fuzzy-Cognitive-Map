@@ -107,7 +107,8 @@ def market(conn: Conn, market_id: str):
     keep = ("outcome", "outcome_index", "asset_id", "mid", "best_bid", "best_ask", "spread", "microprice",
             "imbalance_5", "bid_depth_5c", "ask_depth_5c", "logodds_chg_60m", "updated_at")
     return {"market_id": market_id, "question": first["question"], "slug": first["slug"],
-            "end_date": first["end_date"], "outcomes": [{k: r[k] for k in keep} for r in rows]}
+            "end_date": first["end_date"], "topic": first["topic"], "company": first["company"],
+            "outcomes": [{k: r[k] for k in keep} for r in rows]}
 
 
 @app.get("/api/markets/{market_id}/book")

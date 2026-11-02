@@ -1383,3 +1383,42 @@ table.signals td { vertical-align: top; }
 .details-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .signals .sub-line { flex-wrap: wrap; }
 .details-sm { margin-top: 4px; }
+
+/* ---------- 市场标签 ---------- */
+.tag {
+  font-size: 11px;
+  font-weight: 550;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.tag.company { border-color: transparent; background: #ebeae6; }
+
+.topic-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 14px;
+}
+
+.topic-chips button {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.topic-chips button:hover { border-color: var(--border-strong); }
+.topic-chips button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.topic-chips .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.topic-chips button.active .n { color: inherit; opacity: 0.7; }
+
+td .sub, .market-head .sub { flex-wrap: wrap; }

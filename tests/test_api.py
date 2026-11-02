@@ -105,10 +105,12 @@ class FakeRedis:
 
 TOKENS = [
     {"market_id": "0xM", "question": "Q?", "slug": "q", "end_date": None, "outcome": "Yes", "outcome_index": 1,
-     "asset_id": "Y", "mid": 0.45, "best_bid": 0.4, "best_ask": 0.5, "spread": 0.1, "microprice": 0.44,
+     "asset_id": "Y", "topic": "Releases", "company": "OpenAI",
+     "mid": 0.45, "best_bid": 0.4, "best_ask": 0.5, "spread": 0.1, "microprice": 0.44,
      "imbalance_5": 0.1, "bid_depth_5c": 10.0, "ask_depth_5c": 8.0, "logodds_chg_60m": 0.02, "updated_at": None},
     {"market_id": "0xM", "question": "Q?", "slug": "q", "end_date": None, "outcome": "No", "outcome_index": 2,
-     "asset_id": "N", "mid": 0.55, "best_bid": 0.5, "best_ask": 0.6, "spread": 0.1, "microprice": 0.56,
+     "asset_id": "N", "topic": "Releases", "company": "OpenAI",
+     "mid": 0.55, "best_bid": 0.5, "best_ask": 0.6, "spread": 0.1, "microprice": 0.56,
      "imbalance_5": -0.1, "bid_depth_5c": 8.0, "ask_depth_5c": 10.0, "logodds_chg_60m": -0.02, "updated_at": None},
 ]
 
@@ -123,6 +125,7 @@ def test_market_info():
     client, _ = client_with(TOKENS)
     j = client.get("/api/markets/0xM").json()
     assert j["question"] == "Q?"
+    assert (j["topic"], j["company"]) == ("Releases", "OpenAI")
     assert [o["outcome"] for o in j["outcomes"]] == ["Yes", "No"]
 
 

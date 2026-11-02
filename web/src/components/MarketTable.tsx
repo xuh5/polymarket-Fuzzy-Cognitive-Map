@@ -5,6 +5,7 @@ import { ago, cents, endDate, pct, pointsChange, secondsAgo } from '../format'
 import BookPreview, { PREVIEW_WIDTH } from './BookPreview'
 import Change from './Change'
 import Flash from './Flash'
+import Labels from './Labels'
 
 type SortKey = 'moves' | 'prob' | 'name'
 const SORTS: { key: SortKey; label: string }[] = [
@@ -34,6 +35,7 @@ function pageList(page: number, pages: number): (number | '…')[] {
 
 export default function MarketTable({ markets }: { markets: Market[] }) {
   const [query, setQuery] = useState('')
+  const [picked, setPicked] = useState<string[]>([])   // 选中的话题，可以多选；空 = 全部
   const [sort, setSort] = useState<SortKey>('moves')
   const [pageSize, setPageSize] = useState(10)
   const [page, setPage] = useState(1)
@@ -82,6 +84,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
     const q = query.trim().toLowerCase()
     const list = markets
       .filter((m) => !q || m.question.toLowerCase().includes(q))
+      .filter((m) => picked.length === 0 || picked.includes(m.topic ?? 'Other'))
       .map((m) => {
         const stale = secondsAgo(m.updated_at) > STALE_SECONDS
         // 停止更新的市场，60 分钟变化是停之前的旧值，不显示
@@ -94,7 +97,14 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
     }[sort]
     // 不管按什么排，停止更新的都排在后面
     return list.sort((a, b) => Number(a.stale) - Number(b.stale) || by(a, b))
-  }, [markets, query, sort])
+  }, [markets, query, sort, picked])
+
+  // 下拉框里的话题：按市场数从多到少，Other 放最后
+  const topics = useMemo(() => {
+    const n = new Map<string, number>()
+    for (const m of markets) n.set(m.topic ?? 'Other', (n.get(m.topic ?? 'Other') ?? 0) + 1)
+    return [...n].sort((a, b) => Number(a[0] === 'Other') - Number(b[0] === 'Other') || b[1] - a[1])
+  }, [markets])
 
   const pages = Math.max(1, Math.ceil(rows.length / pageSize))
   const current = Math.min(page, pages)          // 搜索后结果变少时，页码不会超出范围
@@ -118,6 +128,20 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* 按话题筛选：可以多选，再点一次取消；All 清空 */}
+      <div className="topic-chips" role="group" aria-label="Topics">
+        <button className={picked.length === 0 ? 'active' : ''} aria-pressed={picked.length === 0}
+          onClick={() => reset(setPicked)([])}>
+          All <span className="n">{markets.length}</span>
+        </button>
+        {topics.map(([t, n]) => (
+          <button key={t} className={picked.includes(t) ? 'active' : ''} aria-pressed={picked.includes(t)}
+            onClick={() => reset(setPicked)(picked.includes(t) ? picked.filter((x) => x !== t) : [...picked, t])}>
+            {t} <span className="n">{n}</span>
+          </button>
+        ))}
       </div>
 
       <div className="card table-wrap">
@@ -146,6 +170,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
                     {m.question}
                   </Link>
                   <div className="sub">
+                    <Labels topic={m.topic} company={m.company} />
                     {m.outcome !== 'Yes' && <span className="chip">{m.outcome}</span>}
                     {endDate(m.end_date) && <span>Ends {endDate(m.end_date)}</span>}
                     <span>· {ago(m.updated_at)}</span>
@@ -175,7 +200,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
               </tr>
             ))}
             {rows.length === 0 && (
-              <tr><td colSpan={6} className="empty">No markets match “{query}”.</td></tr>
+              <tr><td colSpan={6} className="empty">No markets match these filters.</td></tr>
             )}
           </tbody>
         </table>

@@ -4,6 +4,7 @@ import { fetchBook, fetchHistory, fetchMarket, fetchReplayPeriods, fetchTrades, 
 import BookLadder from '../components/BookLadder'
 import Change from '../components/Change'
 import DepthChart from '../components/DepthChart'
+import Labels from '../components/Labels'
 import PriceChart from '../components/PriceChart'
 import ReplayPanel from '../components/ReplayPanel'
 import SlippageCalc from '../components/SlippageCalc'
@@ -99,6 +100,7 @@ export default function MarketPage() {
         <Link to="/" className="back">← All markets</Link>
         <h1>{m.question}</h1>
         <div className="sub">
+          <Labels topic={m.topic} company={m.company} />
           {endDate(m.end_date) && <span>Ends {endDate(m.end_date)}</span>}
           {first.updated_at && <span>Updated {ago(first.updated_at)}</span>}
           {m.slug && (

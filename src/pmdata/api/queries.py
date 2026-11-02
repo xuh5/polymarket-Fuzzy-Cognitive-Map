@@ -16,14 +16,16 @@ def latest_metric(conn):
 def list_markets(conn, hours):
     """过去 hours 小时有盘口指标的市场，每个市场带第一个选项的最新盘口。
 
+    topic / company 是市场标签（表 market_labels，规则或以后别的打法写的），可能为空。
     tokens 表里有几千个 token，但只有订阅的那几十个有指标：对每个 token 用主键索引（asset_id, second）
     取最新一条，比扫一遍 metrics_book 再去重快得多。
     """
     return conn.execute(
         """
-        select t.market_id, t.question, t.slug, t.outcome, t.end_date, t.asset_id,
+        select t.market_id, t.question, t.slug, t.outcome, t.end_date, t.asset_id, l.topic, l.company,
                b.mid, b.best_bid, b.best_ask, b.spread, b.logodds_chg_60m, b.second as updated_at
         from tokens t
+        left join market_labels l using (market_id)
         join lateral (
             select * from metrics_book b
             where b.asset_id = t.asset_id and b.second > now() - make_interval(hours => %s)
@@ -81,10 +83,11 @@ def market_tokens(conn, market_id):
     """某个市场的所有选项（按 outcome_index 排），每个带最新一条盘口指标（过去 24 小时没有就是 null）。"""
     return conn.execute(
         """
-        select t.market_id, t.question, t.slug, t.end_date, t.outcome, t.outcome_index, t.asset_id,
+        select t.market_id, t.question, t.slug, t.end_date, t.outcome, t.outcome_index, t.asset_id, l.topic, l.company,
                b.mid, b.best_bid, b.best_ask, b.spread, b.microprice, b.imbalance_5,
                b.bid_depth_5c, b.ask_depth_5c, b.logodds_chg_60m, b.second as updated_at
         from tokens t
+        left join market_labels l using (market_id)
         left join lateral (
             select * from metrics_book b
             where b.asset_id = t.asset_id and b.second > now() - interval '24 hours'

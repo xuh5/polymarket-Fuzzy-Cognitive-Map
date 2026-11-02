@@ -10,6 +10,8 @@ export interface Market {
   outcome: string
   end_date: string | null
   asset_id: string
+  topic: string | null     // 市场标签：话题、公司（表 market_labels，可能为空）
+  company: string | null
   mid: number | null
   best_bid: number | null
   best_ask: number | null
@@ -74,6 +76,8 @@ export interface MarketDetail {
   question: string
   slug: string | null
   end_date: string | null
+  topic: string | null
+  company: string | null
   outcomes: OutcomeStats[]
 }
 

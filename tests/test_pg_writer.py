@@ -61,6 +61,7 @@ def test_token_rows_from_markets_and_tombstone_skipped():
     tokens = {k: dict(zip(TOKEN_COLS, v, strict=True)) for k, v in rows["tokens"].items()}
     assert tokens["111"]["outcome"] == "Yes" and tokens["111"]["outcome_index"] == 1
     assert tokens["222"]["outcome"] == "No" and tokens["222"]["market_id"] == "0xM"
+    assert rows["market_labels"] == {"0xM": ("0xM", "Other", None, "rules")}
     assert rows["metrics_book"] == {}
 
 
