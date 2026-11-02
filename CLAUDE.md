@@ -94,6 +94,8 @@ docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服�
 
 另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，3000 端口，VS Code 端口转发访问，用户名 admin）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源、看板和告警用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留；告警是 `grafana/provisioning/alerting/alerts.yml`，发到 Discord）。
 
+`cloudflared`（cloudflare/cloudflared:2026.10.1）：把 api 对外开放成 `api.depthscope.app`，令牌读 .env 的 CLOUDFLARE_TUNNEL_TOKEN；路由在 Cloudflare 网页上配，不在代码里。
+
 `redis`（redis:8.10.2-alpine，只绑 127.0.0.1:6379，不存盘）：当前订单簿缓存，metrics 每秒写 `book:<asset_id>`（格式见 `src/pmdata/book/cache.py`），网站后端读。宿主机连 Redis 用 127.0.0.1，别用 localhost（Windows 上每次连接白等约 2 秒）。
 
 Airflow 3.3.2（2026-10-23 加入，镜像 `polymarket-airflow` = 官方 `apache/airflow:3.3.2-python3.12` + `/opt/dbt-venv` 里单独装的 dbt，见 `airflow/Dockerfile`）：精简部署 LocalExecutor，`airflow-init`（一次性：建元数据表 + admin 用户）、`airflow-apiserver`（网页，宿主机 **8081**，只绑 127.0.0.1，用户 admin / `.env` 的 AIRFLOW_ADMIN_PASSWORD）、`airflow-scheduler`（任务就在这里跑，挂了 `./dbt` 和 `./data` 到 `/opt/project/`）、`airflow-dag-processor`；不装 triggerer/redis/worker。元数据库是现有 postgres 里单独的 `airflow` 库和用户（手动建的，新环境要先建，命令见 README）。DAG 在 `airflow/dags/`（只读挂载，改了不用重建镜像）。基础镜像同样要用户在台式机本地 pull，之后 SSH 下 `DOCKER_BUILDKIT=0 docker build -t polymarket-airflow airflow/`，再 `docker compose up -d --no-deps airflow-init airflow-apiserver airflow-scheduler airflow-dag-processor`。
@@ -270,6 +272,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   网页（用户同意的布局）：接口 `/api/signals?hours=`（全部候选给前端，前端筛）；Signals 页先选类型（kind，跳动只是其中一种，以后加新类型）再按该类型的条件筛；筛选条件是固定格式 `SignalFilter`（`web/src/signals.ts`，网址参数是它的另一种写法），点一行跳到那一刻的回放。上线前的跳动用 `scripts/backfill_signals.py` 从 bronze 回放补写（只写 14:24:46 之前已 final 的，先 `--save` 看结果再 `--load` 写 Kafka）。
 
 - 市场标签（2026-11-02，用户要求只上市场页、Signals 先不加）：Polymarket 自带标签（`include_tag=true`）太乱不用——每个市场 4～12 个、有平台内部标签、按事件打所以不准（百度的市场挂着 Anthropic）。改为 `src/pmdata/topics/rules.py` 按问题文字分：一个话题（10 类，归不进去是 Other）+ 问题里最先提到的公司。pg-sink 写表 market_labels（每个市场一行，source 记谁打的），启动时按现行规则把 tokens 里所有市场重打一遍。**给用户留位置**：以后用户用 AI 理解市场话题（Fuzzy Map 也要用），写同一张表、source 用 ai / manual，规则不覆盖它们。
+
+- **当前进度（2026-11-02）**：模块 1、5、3 完成，Signals（跳动）和市场标签上线，网站已公开（depthscope.app，见上面「部署」）。下一个：模块 2 假深度识别，开工前先用 bronze 探索「挂了又撤、几乎不成交」有多常见。用户待办：Cloudflare 账号开 2FA；换 tunnel 令牌（旧的贴进过聊天），改 .env 后 `up -d --no-deps cloudflared`。没定的：Signals 是否也显示话题标签、更多 signal 类型、推送（模块 4）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
