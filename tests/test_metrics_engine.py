@@ -110,3 +110,13 @@ def test_other_market_does_not_close_window(engine):
     assert engine.apply(book(9000, [("0.1", "1")], [], asset="Z", market="0xOther")) == []
     # 运行程序按时钟兜底输出：Y 的第 1 秒早结束了；Z 的第 9 秒到 9000ms 时还没结束
     assert [r["asset_id"] for r in book_records(engine.flush(up_to_ms=9000))] == ["Y"]
+
+
+def test_price_change_not_compared_across_resubscribe(engine):
+    engine.apply(book(0, [("0.09", "1")], [("0.11", "1")]))           # 中间价 0.10
+    engine.apply(env({"event_type": "unsubscribed", "market": "0xM"}, source="collector"))
+    engine.apply(book(120_000, [("0.39", "1")], [("0.41", "1")]))     # 2 分钟后重新订阅，中间价 0.40
+    engine.apply(change(121_000, "BUY", "0.38", "1"))
+    rec = book_records(engine.flush())[-1]
+    assert rec["book_since"] == 120_000
+    assert rec["logodds_chg_1m"] is None                                # 不和退订前的 0.10 比

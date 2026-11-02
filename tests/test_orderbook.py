@@ -98,3 +98,27 @@ def test_events_that_do_not_touch_book():
     for et in ("last_trade_price", "tick_size_change"):
         assert store.apply({"source": "clob_ws", "payload": {"event_type": et, "market": "0xM", "asset_id": "Y"}}) == []
     assert store.get("Y").bids == {Decimal("0.45"): Decimal("5")}
+
+
+def gap(disconnected_at, reconnected_at="2026-10-29T12:00:05.000+00:00"):
+    return {"source": "collector", "payload": {"event_type": "gap", "market": "0xM",
+                                               "disconnected_at": disconnected_at, "reconnected_at": reconnected_at}}
+
+
+def test_since_marks_start_of_continuous_book():
+    store = BookStore()
+    store.apply(book_msg("Y", [("0.45", "5")], [], ts="1000"))
+    store.apply(book_msg("Y", [("0.46", "5")], [], ts="2000"))            # 没断过：还是同一段
+    assert store.get("Y").since == 1000
+    store.apply(gap("2026-10-29T12:00:03.400+00:00"))                     # 断了 1.6 秒：接着算同一段
+    store.apply(book_msg("Y", [("0.46", "5")], [], ts="3000"))
+    assert store.get("Y").since == 1000
+    store.apply(gap("2026-10-29T11:59:00.000+00:00"))                     # 断了 65 秒：新的一段
+    store.apply(book_msg("Y", [("0.46", "5")], [], ts="4000"))
+    assert store.get("Y").since == 4000
+    store.apply(gap(None))                                                # 采集器刚启动：不知道断了多久
+    store.apply(book_msg("Y", [("0.46", "5")], [], ts="5000"))
+    assert store.get("Y").since == 5000
+    store.apply(marker("unsubscribed"))                                   # 退订后重新订阅
+    store.apply(book_msg("Y", [("0.46", "5")], [], ts="6000"))
+    assert store.get("Y").since == 6000

@@ -261,6 +261,9 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   不另存快照：交易所每笔成交、每次重连都推完整清单（book），回放从 bronze 里上一份 book 开始还原，容器里首次 1～5 秒、缓存 0.2 秒。接口 `/api/markets/{id}/replay?start=&minutes=`（≤60）返回起点订单簿 + 之后每一次变化（毫秒级，用户选的，不按秒切帧，否则看不到短暂挂撤单）；没归档完 complete=false 不缓存。
   前端 Replay 标签（用户同意的布局）：价格图（手写 SVG，Lightweight Charts 只到秒）+ 播放/倍速/拖动 + 深度图和订单簿（刚变的档闪一下）+ 流水；网址 `?replay=开始&len=分钟&at=播放头毫秒` 可分享；Overview 价格图点一下跳到那一刻的回放。
   开始时间只能在这个市场录到数据的时间段里选（用户 2026-11-02 要求）：接口 `/api/markets/{id}/replay/periods`，按退订标记切段（同一市场常有好几段）；容器里扫全部 bronze 要 6 秒，所以 api 后台线程每 5 分钟扫一次、接口读内存。默认看最近一段的最后 20 分钟。
+- Signals（2026-11-02 用户同意）：跳动在后端检测（候选门槛放低、特征记全），网页上用户自己筛选；筛选条件写成固定的数据格式，以后自定义推送规则可复用。以后可能加的 signal：流动性被抽走、大单扫盘、成交量异常。
+  第一版只做价格跳动：第一个选项的中间价和 5 分钟前比 ≥ 3 个点（网页默认显示 ≥ 5）；同一市场隔不到 5 分钟又跳合并成一次（记来回反向次数）；类型 both / wider / narrower（买一卖一一起动 / 价差变宽 / 变窄）；期间成交（笔数、金额、方向）和「平时的几倍」（基准：自己连续记满 24 小时的成交，否则 Gamma volume24hr——实测 82% 的跳动发生在加入订阅不满 24 小时的市场，主要靠 Gamma）；5/30 分钟后的价格。7 天回放：一天约 76 次（≥5 点 34 次）；成交越多越可能保持住（无成交 33% 半小时内回去，≥30 倍 7%）。
+  结构（用户选 A）：新服务 signals 读 pm.metrics.book/trades → pm.events → Postgres → 网站；纯逻辑在 `src/pmdata/signals/detector.py`。metrics 输出加了 book_since（这段连续盘口从哪个快照开始；退订、采集器重启、断线 > 10 秒算新的一段），价格变化只在同一段内比，修掉重新订阅的假跳动。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

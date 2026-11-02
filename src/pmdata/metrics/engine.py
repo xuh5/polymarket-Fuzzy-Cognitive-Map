@@ -36,11 +36,15 @@ def num(x):
 
 
 class MidHistory:
-    """一个 token 每秒的中间价，用来查「N 秒前的中间价」。只保留够算最长时间尺度的部分。"""
+    """一个 token 每秒的中间价，用来查「N 秒前的中间价」。只保留够算最长时间尺度的部分。
+
+    只装同一段连续盘口（since 相同）的价格：市场退订几天后重新订阅，拿新价格和几天前的比会算出假的大跳动。
+    """
 
     KEEP = max(CHANGE_WINDOWS.values())
 
-    def __init__(self):
+    def __init__(self, since=None):
+        self.since = since
         self.secs = []
         self.mids = []
 
@@ -114,7 +118,7 @@ class MetricsEngine:
         bid, ask = book.best_bid(), book.best_ask()
         rec = {"market": book.market, "asset_id": aid, "second": sec * 1000,
                "exchange_ts": book.exchange_ts, "received_at": received_at,
-               "best_bid": num(bid), "best_ask": num(ask)}
+               "best_bid": num(bid), "best_ask": num(ask), "book_since": book.since}
 
         bids, asks = book.top("BUY", TOP_N), book.top("SELL", TOP_N)
         for n in (1, TOP_N):
@@ -141,7 +145,9 @@ class MetricsEngine:
             rec[f"bid_depth_{name}"] = num(sum(p * s for p, s in book.bids.items() if p >= mid - band))
             rec[f"ask_depth_{name}"] = num(sum(p * s for p, s in book.asks.items() if p <= mid + band))
 
-        hist = self.history.setdefault(aid, MidHistory())
+        hist = self.history.get(aid)
+        if hist is None or hist.since != book.since:
+            hist = self.history[aid] = MidHistory(book.since)
         for name, seconds in CHANGE_WINDOWS.items():
             before = hist.as_of(sec - seconds)
             rec[f"logodds_chg_{name}"] = logit(mid) - logit(before) if mid is not None and before is not None else None

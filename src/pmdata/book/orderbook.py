@@ -7,10 +7,21 @@
 - book 快照（WebSocket 推的，或重连后 REST 补拉的）：这个 token 的盘口整份替换，之后才算「可用」
 - price_change：size 是这个价位变化后的总挂单量（不是增量），0 表示这一档没了
 - gap 标记：这个市场断过线，中间的变化可能漏了，盘口作废，等下一个快照
+  断线超过 SHORT_GAP_SECONDS（或采集器刚启动、市场刚加入订阅）时，下一个快照开始新的「一段连续盘口」（Book.since）：
+  前后两段的价格不能拿来比（中间可能隔了几小时甚至几天），算价格变化的下游据此重新开始
 - unsubscribed / market_resolved：这个市场不再有数据，盘口删掉
 - 还没收到快照（或作废后）收到的 price_change 直接忽略：在不完整的盘口上改一档，结果也是错的
 """
 from decimal import Decimal
+
+from pmdata.common.timeutil import parse_time
+
+SHORT_GAP_SECONDS = 10   # 断线不超过这么久：只漏了几秒的变化，前后价格还能接着比（实测重连一般 1.6 秒）
+
+
+def is_short_gap(p):
+    a, b = parse_time(p.get("disconnected_at")), parse_time(p.get("reconnected_at"))
+    return a is not None and b is not None and (b - a).total_seconds() <= SHORT_GAP_SECONDS
 
 
 class Book:
@@ -23,6 +34,8 @@ class Book:
         self.valid = False
         self.exchange_ts = None   # 最后一次更新的交易所时间（毫秒）
         self.version = 0          # 改过几次；同一毫秒可能改好几次，所以判断「变没变」用它，不用 exchange_ts
+        self.since = None         # 这一段连续盘口从哪个快照开始（交易所时间，毫秒）
+        self.broken = True        # 下一个快照开始新的一段
 
     def replace(self, bids, asks, exchange_ts):
         self.bids = {Decimal(x["price"]): Decimal(x["size"]) for x in bids}
@@ -30,6 +43,8 @@ class Book:
         self.valid = True
         self.exchange_ts = exchange_ts
         self.version += 1
+        if self.broken:
+            self.since, self.broken = exchange_ts, False
 
     def set_level(self, side, price, size, exchange_ts):
         levels = self.bids if side == "BUY" else self.asks
@@ -73,6 +88,7 @@ class BookStore:
                 for book in self.books.values():
                     if book.market == p["market"]:
                         book.valid = False
+                        book.broken = book.broken or not is_short_gap(p)
             elif p["event_type"] == "unsubscribed":
                 self._drop_market(p["market"])
             return []
