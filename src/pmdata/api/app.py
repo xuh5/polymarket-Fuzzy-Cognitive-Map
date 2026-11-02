@@ -159,6 +159,12 @@ def replay_periods(conn: Conn, market_id: str):
     return [{"start": a, "end": b} for a, b in replay_bronze.periods(market_id)]
 
 
+@app.get("/api/signals")
+def signals(conn: Conn, hours: Annotated[int, Query(ge=1, le=720)] = 168):
+    """过去 hours 小时的价格跳动（候选门槛 3 个点，网页自己筛）。字段含义见 pmdata.signals.detector。"""
+    return queries.list_signals(conn, hours)
+
+
 @app.get("/api/status")
 def pipeline_status(conn: Conn):
     """Status 页面：总体状态、各段延迟、吞吐量、积压、行情质量、过去 7 天每小时的可用率、事故列表。"""

@@ -1282,3 +1282,104 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 .periods button:hover { border-color: var(--border-strong); }
 .periods button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+/* ---------- Signals ---------- */
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+}
+
+.filter {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.filter select {
+  font: inherit;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.toggles {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.toggle input { accent-color: var(--accent); margin: 0; }
+
+.link-button {
+  font: inherit;
+  font-size: 13px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.link-button:hover { text-decoration: underline; }
+
+table.signals td { vertical-align: top; }
+.signals .when { white-space: nowrap; color: var(--ink-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.signals .when .chip { display: inline-block; margin-top: 4px; }
+.live-chip { background: var(--down-soft); color: var(--down); }
+
+.sub-line {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sub-line span { white-space: nowrap; }
+.num .sub-line { justify-content: flex-end; }
+.sub-line .against { color: var(--down); }
+.outcome { font-weight: 550; }
+.outcome.held { color: var(--up); }
+.outcome.reverted { color: var(--muted); }
+
+.more { display: flex; justify-content: center; padding: 16px 0; }
+
+/* 手机上时间不单独占一列，放到市场名下面 */
+.signals .only-sm { display: none; }
+
+@media (max-width: 720px) {
+  .signals .when { display: none; }
+  .signals .only-sm { display: flex; }
+}
+
+.spread-row { justify-content: space-between; }
+.kind-filters { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.filter-note { margin: 0; font-size: 13px; color: var(--muted); }
+.info { color: var(--muted); cursor: help; }
+.details-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.signals .sub-line { flex-wrap: wrap; }
+.details-sm { margin-top: 4px; }

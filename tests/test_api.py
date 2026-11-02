@@ -189,3 +189,12 @@ def test_replay_periods(monkeypatch):
     client, _ = client_with(TOKENS)
     assert client.get("/api/markets/0xM/replay/periods").json() == [
         {"start": "2026-10-29T12:00:00+00:00", "end": "2026-10-29T13:00:00+00:00"}]
+
+
+def test_signals_passes_hours():
+    client, conn = client_with([{"event_id": "0xM:1", "status": "final", "change_points": 5.0}])
+    r = client.get("/api/signals?hours=24")
+    assert r.status_code == 200
+    assert r.json() == [{"event_id": "0xM:1", "status": "final", "change_points": 5.0}]
+    assert conn.calls[0][1] == (24,)
+    assert client.get("/api/signals?hours=1000").status_code == 422

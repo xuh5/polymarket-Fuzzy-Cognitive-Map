@@ -73,7 +73,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟；quality.py 乱序/盘口对不上）。
 - `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL、`status.py` Status 页面：读 health_* 表算总体状态/可用率/事故）。`src/pmdata/replay/`：模块 3 回放（`timeline.py` 纯逻辑，`bronze.py` 读 bronze）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
-- `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
+- `scripts/`：一次性脚本——create_topics.py；阶段 2 验收用的核对脚本 verify_gold_vs_bronze.py（Python 独立重算 vs gold）、verify_trades_vs_official.py（vs 官方 Data API v2，`--start/--end`），用户决定不做成定期任务，只保留以便复现；backfill_signals.py（一次性补写 signals 上线前的跳动）。`tests/`：pytest，采集器的 Kafka 写入用 FakeProducer 替换（monkeypatch 模块里的 `make_producer`）。
 
 ## Docker
 
@@ -265,6 +265,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - Signals（2026-11-02 用户同意）：跳动在后端检测（候选门槛放低、特征记全），网页上用户自己筛选；筛选条件写成固定的数据格式，以后自定义推送规则可复用。以后可能加的 signal：流动性被抽走、大单扫盘、成交量异常。
   第一版只做价格跳动：第一个选项的中间价和 5 分钟前比 ≥ 3 个点（网页默认显示 ≥ 5）；同一市场隔不到 5 分钟又跳合并成一次（记来回反向次数）；类型 both / wider / narrower（买一卖一一起动 / 价差变宽 / 变窄）；期间成交（笔数、金额、方向）和「平时的几倍」（基准：自己连续记满 24 小时的成交，否则 Gamma volume24hr——实测 82% 的跳动发生在加入订阅不满 24 小时的市场，主要靠 Gamma）；5/30 分钟后的价格。7 天回放：一天约 76 次（≥5 点 34 次）；成交越多越可能保持住（无成交 33% 半小时内回去，≥30 倍 7%）。
   结构（用户选 A）：新服务 signals 读 pm.metrics.book/trades → pm.events → Postgres → 网站；纯逻辑在 `src/pmdata/signals/detector.py`，运行程序 `pmdata.signals.run`（group pm-signals，预热 25 小时约 10 秒，容器 signals，2026-11-02 14:24 UTC 起运行）；pg-sink 写表 signal_events（状态只往前走，不倒退）。metrics 输出加了 book_since（这段连续盘口从哪个快照开始；退订、采集器重启、断线 > 10 秒算新的一段），价格变化只在同一段内比，修掉重新订阅的假跳动。
+  网页（用户同意的布局）：接口 `/api/signals?hours=`（全部候选给前端，前端筛）；Signals 页先选类型（kind，跳动只是其中一种，以后加新类型）再按该类型的条件筛；筛选条件是固定格式 `SignalFilter`（`web/src/signals.ts`，网址参数是它的另一种写法），点一行跳到那一刻的回放。上线前的跳动用 `scripts/backfill_signals.py` 从 bronze 回放补写（只写 14:24:46 之前已 final 的，先 `--save` 看结果再 `--load` 写 Kafka）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

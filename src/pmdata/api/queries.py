@@ -97,3 +97,25 @@ def market_tokens(conn, market_id):
         (market_id,),
     ).fetchall()
 
+
+
+def list_signals(conn, hours):
+    """过去 hours 小时（按峰值时间）的所有 signal，最新的在前，带市场问题和第一个选项的名字。
+
+    kind 是类型（目前只有 jump = 价格跳动）。signals 服务写的是候选（门槛放低），筛选在网页上做：
+    一周几百条，全部给前端就行；量大了再改成按条件查（规则格式见 web/src/signals.ts）。
+    """
+    return conn.execute(
+        """
+        select e.event_id, e.kind, e.status, e.market_id, t.question, t.slug, t.outcome,
+               e.start_at, e.peak_at, e.last_at, e.mid_before, e.mid_peak, e.change_points,
+               e.bid_before, e.ask_before, e.bid_peak, e.ask_peak, e.spread_before, e.spread_peak, e.depth_before,
+               e.move_type, e.reversals, e.trades, e.notional, e.bullish_volume, e.bearish_volume, e.flow,
+               e.baseline_source, e.volume_ratio, e.mid_after_5m, e.mid_after_30m
+        from signal_events e
+        left join tokens t on t.asset_id = e.asset_id
+        where e.peak_at > now() - make_interval(hours => %s)
+        order by e.peak_at desc
+        """,
+        (hours,),
+    ).fetchall()

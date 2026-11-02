@@ -194,3 +194,44 @@ export interface ReplayPeriod {
 
 export const fetchReplayPeriods = (marketId: string) =>
   getJson<ReplayPeriod[]>(`/api/markets/${marketId}/replay/periods`)
+
+// ---------- Signals（pmdata/signals/；时间是 ISO 字符串，价格 0～1） ----------
+// 每条 signal 有类型 kind，目前只有 jump（价格跳动，字段见 detector.py）；以后的新类型加在 SignalKind 里
+export type SignalKind = 'jump'
+export type MoveType = 'both' | 'wider' | 'narrower' | 'other'
+
+export interface Signal {
+  event_id: string
+  kind: SignalKind
+  status: 'open' | 'closed' | 'final'   // open = 还在跳；final = 30 分钟后的价格也有了
+  market_id: string
+  question: string | null
+  slug: string | null
+  outcome: string | null
+  start_at: string            // 第一次过门槛（和 5 分钟前比 ≥ 3 个点）
+  peak_at: string             // 变化最大的那一刻
+  last_at: string             // 最后一次过门槛
+  mid_before: number          // 峰值 5 分钟前的中间价
+  mid_peak: number
+  change_points: number       // 峰值和 5 分钟前比变了几个点（带正负）
+  bid_before: number | null
+  ask_before: number | null
+  bid_peak: number | null
+  ask_peak: number | null
+  spread_before: number | null
+  spread_peak: number | null
+  depth_before: number | null // 跳之前中间价 ±5¢ 内的挂单（美元）
+  move_type: MoveType
+  reversals: number           // 期间来回反向了几次
+  trades: number              // 峰值前 5 分钟的成交笔数
+  notional: number            // 成交金额（美元）
+  bullish_volume: number
+  bearish_volume: number
+  flow: number | null         // (看涨 − 看跌) / 合计，−1～1
+  baseline_source: 'own' | 'gamma' | null
+  volume_ratio: number | null // 成交金额是平时 5 分钟的几倍
+  mid_after_5m: number | null
+  mid_after_30m: number | null
+}
+
+export const fetchSignals = (hours: number) => getJson<Signal[]>(`/api/signals?hours=${hours}`)

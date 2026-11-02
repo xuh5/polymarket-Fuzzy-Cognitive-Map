@@ -6,6 +6,7 @@ import Header from './components/Header'
 import MarketPage from './pages/MarketPage'
 import Markets from './pages/Markets'
 import Placeholder from './pages/Placeholder'
+import Signals from './pages/Signals'
 import Status from './pages/Status'
 
 const HEALTH_REFRESH_MS = 5000
@@ -32,10 +33,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Markets />} />
           <Route path="/markets/:marketId" element={<MarketPage />} />
-          <Route path="/signals" element={
-            <Placeholder title="Signals"
-              description="Markets with suspicious depth, and recent alerts for large moves and liquidity drops." />
-          } />
+          <Route path="/signals" element={<Signals />} />
           <Route path="/fuzzy-map" element={
             <Placeholder title="Fuzzy Map"
               description="A fuzzy cognitive map of how markets and events push each other's odds up or down." />
