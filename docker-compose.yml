@@ -144,6 +144,19 @@ services:
     command: python -m pmdata.metrics.run
     logging: *logging
 
+  # 跳动检测：pm.metrics.book / pm.metrics.trades → pm.events（Signals 页用）
+  signals:
+    build: .
+    image: polymarket-app
+    container_name: signals
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+    command: python -m pmdata.signals.run
+    logging: *logging
+
   # 看板用的数据库。密码在 .env（不进 Git），compose 自动读取
   postgres:
     image: postgres:17.6

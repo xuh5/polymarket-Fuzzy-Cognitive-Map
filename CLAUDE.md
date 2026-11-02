@@ -77,7 +77,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）八个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`signals`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）九个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -117,6 +117,7 @@ Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），
 | pm.raw.comments | 评论 id | 3 | compact，永久保留每条评论的最新版本 |
 | pm.metrics.book | 市场 id | 3 | 保留 7 天；盘口类指标，按 token 每秒最多一条 |
 | pm.metrics.trades | 市场 id | 3 | 保留 7 天；成交类指标，按 token 每分钟一条 |
+| pm.events | event_id（市场 ID:开始秒） | 3 | compact，永久保留；检测出的跳动，同一事件 open → closed → final 三版，只留最新 |
 
 create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 一律用 `latest_by_key()`（后读到的覆盖先读到的）。
 
@@ -263,7 +264,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   开始时间只能在这个市场录到数据的时间段里选（用户 2026-11-02 要求）：接口 `/api/markets/{id}/replay/periods`，按退订标记切段（同一市场常有好几段）；容器里扫全部 bronze 要 6 秒，所以 api 后台线程每 5 分钟扫一次、接口读内存。默认看最近一段的最后 20 分钟。
 - Signals（2026-11-02 用户同意）：跳动在后端检测（候选门槛放低、特征记全），网页上用户自己筛选；筛选条件写成固定的数据格式，以后自定义推送规则可复用。以后可能加的 signal：流动性被抽走、大单扫盘、成交量异常。
   第一版只做价格跳动：第一个选项的中间价和 5 分钟前比 ≥ 3 个点（网页默认显示 ≥ 5）；同一市场隔不到 5 分钟又跳合并成一次（记来回反向次数）；类型 both / wider / narrower（买一卖一一起动 / 价差变宽 / 变窄）；期间成交（笔数、金额、方向）和「平时的几倍」（基准：自己连续记满 24 小时的成交，否则 Gamma volume24hr——实测 82% 的跳动发生在加入订阅不满 24 小时的市场，主要靠 Gamma）；5/30 分钟后的价格。7 天回放：一天约 76 次（≥5 点 34 次）；成交越多越可能保持住（无成交 33% 半小时内回去，≥30 倍 7%）。
-  结构（用户选 A）：新服务 signals 读 pm.metrics.book/trades → pm.events → Postgres → 网站；纯逻辑在 `src/pmdata/signals/detector.py`。metrics 输出加了 book_since（这段连续盘口从哪个快照开始；退订、采集器重启、断线 > 10 秒算新的一段），价格变化只在同一段内比，修掉重新订阅的假跳动。
+  结构（用户选 A）：新服务 signals 读 pm.metrics.book/trades → pm.events → Postgres → 网站；纯逻辑在 `src/pmdata/signals/detector.py`，运行程序 `pmdata.signals.run`（group pm-signals，预热 25 小时约 10 秒，容器 signals，2026-11-02 14:24 UTC 起运行）；pg-sink 写表 signal_events（状态只往前走，不倒退）。metrics 输出加了 book_since（这段连续盘口从哪个快照开始；退订、采集器重启、断线 > 10 秒算新的一段），价格变化只在同一段内比，修掉重新订阅的假跳动。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

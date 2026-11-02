@@ -1,16 +1,17 @@
 """把实时指标写进 Postgres，给 Grafana 看板用。
 
-一个 consumer（group = pm-pg-sink）读三个 topic：
+一个 consumer（group = pm-pg-sink）读四个 topic：
 - pm.metrics.book   → 表 metrics_book（主键 asset_id + second）
 - pm.metrics.trades → 表 metrics_trades（主键 asset_id + minute）
 - pm.raw.markets    → 表 tokens（asset_id → 市场问题、Yes/No），看板上显示市场名字用
+- pm.events         → 表 signal_events（主键 event_id），网站 Signals 页用；永久保留
 
 可靠性：每批先写数据库、提交事务，成功后才提交 Kafka offset（at-least-once）。
 上游 metrics 程序本身也可能重复输出，所以全部用 upsert（INSERT ... ON CONFLICT DO UPDATE）：
 同一个主键写几次结果都一样，重复的自然被覆盖——合起来效果等于 exactly-once。
 写数据库出错直接退出，让 Docker 重启，从上次提交的位置重读。
 
-数据只留 RETENTION_DAYS 天（和 Kafka 一样），更早的随时可以从 bronze 重算。
+指标只留 RETENTION_DAYS 天（和 Kafka 一样），更早的随时可以从 bronze 重算。
 """
 import argparse
 import json
@@ -22,7 +23,14 @@ from datetime import UTC, datetime
 import psycopg
 from confluent_kafka import Consumer
 
-from pmdata.common.config import KAFKA_BOOTSTRAP, PG_DSN, TOPIC_MARKETS, TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES
+from pmdata.common.config import (
+    KAFKA_BOOTSTRAP,
+    PG_DSN,
+    TOPIC_EVENTS,
+    TOPIC_MARKETS,
+    TOPIC_METRICS_BOOK,
+    TOPIC_METRICS_TRADES,
+)
 from pmdata.common.log import setup_logging
 from pmdata.common.timeutil import parse_time
 from pmdata.ingest.select_markets import get_token_ids
@@ -41,6 +49,14 @@ BOOK_COLS = ["asset_id", "second", "market_id", "best_bid", "best_ask", "mid", "
 TRADE_COLS = ["asset_id", "minute", "market_id", "trades", "volume", "notional", "buy_volume", "sell_volume",
               "exchange_ts", "received_at", "computed_at"]
 TOKEN_COLS = ["asset_id", "market_id", "question", "outcome", "outcome_index", "slug", "end_date"]
+# 跳动事件，字段含义见 pmdata.signals.detector
+EVENT_TIMES = ["start_at", "peak_at", "last_at", "book_since"]
+EVENT_FLOATS = ["mid_before", "mid_peak", "change_points", "change_logodds", "bid_before", "ask_before", "bid_peak",
+                "ask_peak", "spread_before", "spread_peak", "depth_before", "notional", "bullish_volume",
+                "bearish_volume", "flow", "baseline_notional_24h", "volume_ratio", "mid_after_5m", "mid_after_30m"]
+EVENT_COLS = (["event_id", "kind", "status", "market_id", "asset_id"] + EVENT_TIMES + EVENT_FLOATS
+              + ["move_type", "reversals", "trades", "baseline_source", "computed_at"])
+STATUS_ORDER = "array['open', 'closed', 'final']"
 
 SCHEMA = f"""
 create table if not exists metrics_book (
@@ -85,6 +101,24 @@ create table if not exists tokens (
     updated_at timestamptz not null default now()
 );
 create index if not exists tokens_market on tokens (market_id);
+
+create table if not exists signal_events (
+    event_id text primary key,             -- 市场 ID:开始那一秒
+    kind text not null,                    -- 目前只有 jump
+    status text not null,                  -- open / closed / final
+    market_id text not null,
+    asset_id text not null,
+    {", ".join(f"{c} timestamptz" for c in EVENT_TIMES)},
+    {", ".join(f"{c} double precision" for c in EVENT_FLOATS)},
+    move_type text,
+    reversals integer,
+    trades integer,
+    baseline_source text,
+    computed_at timestamptz,
+    inserted_at timestamptz not null default now(),   -- 第一次写进来的时间（open），之后的版本不改它
+    updated_at timestamptz not null default now()
+);
+create index if not exists signal_events_peak on signal_events (peak_at);
 """
 
 
@@ -102,6 +136,12 @@ def trade_row(rec):
     r = dict(rec, minute=ms(rec["minute"]), market_id=rec["market"], exchange_ts=ms(rec["exchange_ts"]),
              received_at=parse_time(rec["received_at"]), computed_at=parse_time(rec["computed_at"]))
     return tuple(r.get(c) for c in TRADE_COLS)
+
+
+def event_row(rec):
+    r = dict(rec, market_id=rec["market"], start_at=ms(rec["start"]), peak_at=ms(rec["peak"]),
+             last_at=ms(rec["last"]), book_since=ms(rec["book_since"]), computed_at=parse_time(rec["computed_at"]))
+    return tuple(r.get(c) for c in EVENT_COLS)
 
 
 def token_rows(market):
@@ -123,6 +163,9 @@ UPSERTS = {
     "metrics_book": upsert_sql("metrics_book", BOOK_COLS, ["asset_id", "second"], ", inserted_at = now()"),
     "metrics_trades": upsert_sql("metrics_trades", TRADE_COLS, ["asset_id", "minute"], ", inserted_at = now()"),
     "tokens": upsert_sql("tokens", TOKEN_COLS, ["asset_id"], ", updated_at = now()"),
+    # 重启后上游可能重发旧版本（比如 final 之后又来一条 open）：状态只往前走，不倒退
+    "signal_events": upsert_sql("signal_events", EVENT_COLS, ["event_id"], ", updated_at = now()")
+    + f" where array_position({STATUS_ORDER}, excluded.status) >= array_position({STATUS_ORDER}, signal_events.status)",
 }
 
 
@@ -144,6 +187,9 @@ def to_rows(msgs):
         elif topic == TOPIC_METRICS_TRADES:
             row = trade_row(rec)
             rows["metrics_trades"][row[:2]] = row
+        elif topic == TOPIC_EVENTS:
+            row = event_row(rec)
+            rows["signal_events"][row[0]] = row
         elif topic == TOPIC_MARKETS:
             for row in token_rows(rec["payload"]):
                 rows["tokens"][row[0]] = row
@@ -191,7 +237,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_MARKETS])
+    consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_MARKETS, TOPIC_EVENTS])
     log.info("开始（group=%s）", args.group_id)
     deadline = time.monotonic() + args.duration if args.duration else None
     last_cleanup = last_report = time.monotonic()

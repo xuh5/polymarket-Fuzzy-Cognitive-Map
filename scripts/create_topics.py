@@ -8,6 +8,7 @@ from pmdata.common.config import (
     KAFKA_BOOTSTRAP,
     TOPIC_CLOB,
     TOPIC_COMMENTS,
+    TOPIC_EVENTS,
     TOPIC_MARKETS,
     TOPIC_METRICS_BOOK,
     TOPIC_METRICS_TRADES,
@@ -24,6 +25,8 @@ TOPICS = [
     # 阶段 3 实时指标（key 是市场 ID，和 pm.raw.clob 一致）；算错了可以从 raw 重算，保留 7 天就够
     (TOPIC_METRICS_BOOK,   3, {"retention.ms": SEVEN_DAYS_MS}),
     (TOPIC_METRICS_TRADES, 3, {"retention.ms": SEVEN_DAYS_MS}),
+    # 检测出的事件（key 是 event_id）：同一事件会写好几版（open → closed → final），只留最新一版、永久保留
+    (TOPIC_EVENTS, 3, {"cleanup.policy": "compact", "retention.ms": None}),
 ]
 
 

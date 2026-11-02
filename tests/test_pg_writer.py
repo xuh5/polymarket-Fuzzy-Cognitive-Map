@@ -1,7 +1,9 @@
 import json
 from datetime import UTC, datetime
 
-from pmdata.sink.pg_writer import BOOK_COLS, TOKEN_COLS, TRADE_COLS, to_rows, upsert_sql
+from pmdata.common.config import TOPIC_METRICS_BOOK
+from pmdata.signals.detector import JumpDetector
+from pmdata.sink.pg_writer import BOOK_COLS, EVENT_COLS, TOKEN_COLS, TRADE_COLS, UPSERTS, to_rows, upsert_sql
 
 
 class FakeMsg:
@@ -66,3 +68,19 @@ def test_upsert_sql():
     sql = upsert_sql("t", ["a", "b", "c"], ["a"], ", x = now()")
     assert sql == ("insert into t (a, b, c) values (%s, %s, %s) "
                    "on conflict (a) do update set b = excluded.b, c = excluded.c, x = now()")
+
+
+def test_event_rows_from_detector_output():
+    det = JumpDetector(clock=lambda: "2026-10-22T09:05:00.000+00:00")
+    det.outcomes = {"Y": 1}
+    for sec, mid in ((0, 0.41), (300, 0.45)):
+        [ev] = det.apply(TOPIC_METRICS_BOOK, {
+            "market": "0xM", "asset_id": "Y", "second": sec * 1000, "book_since": 0, "best_bid": mid - 0.01,
+            "best_ask": mid + 0.01, "mid": mid, "spread": 0.02}) or [None]
+    rows = to_rows([FakeMsg("pm.events", dict(ev, status="open")), FakeMsg("pm.events", dict(ev, status="closed"))])
+    [row] = rows["signal_events"].values()
+    row = dict(zip(EVENT_COLS, row, strict=True))
+    assert row["status"] == "closed" and row["market_id"] == "0xM"
+    assert row["peak_at"] == datetime.fromtimestamp(300, UTC) and row["book_since"] == datetime.fromtimestamp(0, UTC)
+    assert row["move_type"] == "both" and row["mid_after_30m"] is None
+    assert "where array_position" in UPSERTS["signal_events"]      # 状态不倒退
