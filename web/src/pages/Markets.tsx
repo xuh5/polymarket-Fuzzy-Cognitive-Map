@@ -53,7 +53,7 @@ export default function Markets() {
         {loaded && !failed && (
           <div className="hero-stats">
             <span><strong>{tracked}</strong> markets live</span>
-            <span><strong>{markets.length}</strong> seen in the last 24h</span>
+            <span><strong>{markets.length}</strong> tracked in the last 24h</span>
           </div>
         )}
       </section>
