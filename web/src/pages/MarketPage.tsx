@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
-import { fetchBook, fetchHistory, fetchMarket, fetchTrades, polymarketUrl } from '../api'
+import { Link, useParams, useSearchParams } from 'react-router'
+import { fetchBook, fetchHistory, fetchMarket, fetchReplayPeriods, fetchTrades, polymarketUrl } from '../api'
 import BookLadder from '../components/BookLadder'
 import Change from '../components/Change'
 import DepthChart from '../components/DepthChart'
 import PriceChart from '../components/PriceChart'
+import ReplayPanel from '../components/ReplayPanel'
 import SlippageCalc from '../components/SlippageCalc'
 import { ago, cents, endDate, pct, pointsChange, usd } from '../format'
+import { LENGTHS, minuteFloor, windowAtEnd } from '../replay'
 import { usePolling } from '../usePolling'
 
 // 走势图的时间范围：多长、每个点聚合多少秒（点数控制在几百个以内）
@@ -33,9 +35,14 @@ function Segmented<T extends string | number>({ options, value, onChange, label,
   )
 }
 
+const REPLAY_LEAD = 10 * 60000   // 从 Overview 价格图点进来：从点的那一刻往前 10 分钟开始
+
 export default function MarketPage() {
   const { marketId = '' } = useParams()
-  const [tab, setTab] = useState<(typeof TABS)[number]>('Overview')
+  // 网址带上回放的时间（?replay=开始时间&len=分钟），回放某一刻可以直接发链接给别人
+  const [params, setParams] = useSearchParams()
+  const [tab, setTab] = useState<(typeof TABS)[number]>(() => (params.has('replay') ? 'Replay' : 'Overview'))
+  const [replayAt, setReplayAt] = useState<number | null>(null)
   const [range, setRange] = useState(RANGES[0])
   const [outcomeIndex, setOutcomeIndex] = useState(1)
   const [depthRange, setDepthRange] = useState(0.1)
@@ -48,6 +55,8 @@ export default function MarketPage() {
   const trades = usePolling(() => fetchTrades(marketId, range.minutes, tradeBucket), 30000,
     `${marketId}/${range.label}`)
   const book = usePolling(() => fetchBook(marketId, outcomeIndex), 2000, `${marketId}/${outcomeIndex}`)
+  // 正在订阅的市场最后一段一直在变长，隔一分钟刷新一次
+  const periods = usePolling(() => fetchReplayPeriods(marketId), 60000, marketId)
 
   const m = market.data
   if (market.failed && !m) {
@@ -65,6 +74,24 @@ export default function MarketPage() {
   const current = m.outcomes.find((o) => o.outcome_index === outcomeIndex) ?? first
   const pts = pointsChange(first.mid, first.logodds_chg_60m)
   const b = book.data
+
+  const p = periods.data
+  const lenParam = Number(params.get('len'))
+  const replayLength = (LENGTHS as readonly number[]).includes(lenParam) ? lenParam : 20
+  // 网址没带时间：默认看最近一段录制的最后 20 分钟
+  const replayStart = Date.parse(params.get('replay') ?? '') || (p?.length ? windowAtEnd(p[p.length - 1], replayLength) : 0)
+  const setReplayWindow = (start: number, minutes: number) =>
+    setParams({ replay: new Date(start).toISOString(), len: String(minutes) }, { replace: true })
+  const switchTab = (t: (typeof TABS)[number]) => {
+    setTab(t)
+    if (t !== 'Replay') setParams({}, { replace: true })
+  }
+  // Overview 价格图上点了某一刻（秒）：切到回放，播放头停在那一刻
+  const replayFrom = (sec: number) => {
+    setReplayAt(sec * 1000)
+    setReplayWindow(minuteFloor(sec * 1000 - REPLAY_LEAD), 20)
+    setTab('Replay')
+  }
 
   return (
     <>
@@ -110,22 +137,33 @@ export default function MarketPage() {
       <div className="tabs" role="tablist" aria-label="Market views">
         {TABS.map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''}
-            onClick={() => setTab(t)}>{t}</button>
+            onClick={() => switchTab(t)}>{t}</button>
         ))}
       </div>
 
-      {tab !== 'Overview' && <div className="card notice placeholder">Coming soon.</div>}
+      {tab === 'Replay' && !p && (
+        <div className="card notice">{periods.failed ? "Couldn't load the recorded periods." : 'Loading…'}</div>
+      )}
+      {tab === 'Replay' && p?.length === 0 && (
+        <div className="card notice">Nothing recorded for this market yet, so there's nothing to replay.</div>
+      )}
+      {tab === 'Replay' && !!p?.length && (
+        <ReplayPanel key={`${marketId}/${replayAt}`} marketId={marketId} outcomes={m.outcomes} periods={p}
+          initialStart={replayStart} initialLength={replayLength} initialAt={replayAt ?? (Number(params.get('at')) || null)}
+          onWindowChange={setReplayWindow} />
+      )}
+      {tab === 'Depth quality' && <div className="card notice placeholder">Coming soon.</div>}
 
       {tab === 'Overview' && (
         <>
           <section>
             <div className="section-head">
-              <h2>{first.outcome} price <span className="muted">· mid with best bid / ask, volume</span></h2>
+              <h2>{first.outcome} price <span className="muted">· mid with best bid / ask, volume · click to replay</span></h2>
               <Segmented options={RANGES.map((r) => r.label)} value={range.label} label="Time range"
                 onChange={(l) => setRange(RANGES.find((r) => r.label === l)!)} />
             </div>
             <div className="card chart-card"><PriceChart key={`${marketId}/${range.label}`} points={history.data ?? []} bucketSeconds={range.bucket}
-              trades={trades.data ?? []} tradeBucketSeconds={tradeBucket} /></div>
+              trades={trades.data ?? []} tradeBucketSeconds={tradeBucket} onPick={replayFrom} /></div>
           </section>
 
           <section>

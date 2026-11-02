@@ -259,6 +259,8 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - **模块 5 完成（2026-10-29）**。下一个：模块 3 跳动回放。
 - 模块 3（2026-11-02，用户同意）：顺序改为先做「任选时间回放」，跳动的定义等用户看过回放再定（统计过：5 分钟变化 ≥10 个点约 13 次/天，约 4 成前 5 分钟无成交；metrics 的价格变化会跨退订期比较，重新加入订阅名单时出现假跳动，定义时要排除）。
   不另存快照：交易所每笔成交、每次重连都推完整清单（book），回放从 bronze 里上一份 book 开始还原，容器里首次 1～5 秒、缓存 0.2 秒。接口 `/api/markets/{id}/replay?start=&minutes=`（≤60）返回起点订单簿 + 之后每一次变化（毫秒级，用户选的，不按秒切帧，否则看不到短暂挂撤单）；没归档完 complete=false 不缓存。
+  前端 Replay 标签（用户同意的布局）：价格图（手写 SVG，Lightweight Charts 只到秒）+ 播放/倍速/拖动 + 深度图和订单簿（刚变的档闪一下）+ 流水；网址 `?replay=开始&len=分钟&at=播放头毫秒` 可分享；Overview 价格图点一下跳到那一刻的回放。
+  开始时间只能在这个市场录到数据的时间段里选（用户 2026-11-02 要求）：接口 `/api/markets/{id}/replay/periods`，按退订标记切段（同一市场常有好几段）；容器里扫全部 bronze 要 6 秒，所以 api 后台线程每 5 分钟扫一次、接口读内存。默认看最近一段的最后 20 分钟。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

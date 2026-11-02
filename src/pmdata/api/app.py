@@ -8,6 +8,7 @@
 """
 import argparse
 import json
+import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
@@ -35,7 +36,10 @@ redis_client = redis.Redis.from_url(REDIS_URL, socket_timeout=1, socket_connect_
 @asynccontextmanager
 async def lifespan(app):
     pool.open()
+    stop = threading.Event()
+    threading.Thread(target=replay_bronze.keep_periods_fresh, args=(stop,), daemon=True).start()
     yield
+    stop.set()
     pool.close()
 
 
@@ -146,6 +150,13 @@ def replay(conn: Conn, market_id: str, start: datetime, minutes: Annotated[int, 
             "outcomes": [{"outcome_index": r["outcome_index"], "outcome": r["outcome"], "asset_id": r["asset_id"],
                           "initial": result["initial"][r["outcome_index"]]} for r in rows],
             "events": result["events"]}
+
+
+@app.get("/api/markets/{market_id}/replay/periods")
+def replay_periods(conn: Conn, market_id: str):
+    """能回放的时间段：这个市场在订阅名单里、bronze 录到数据的几段（按时间排）。回放的开始时间只能在这里面选。"""
+    tokens_or_404(conn, market_id)
+    return [{"start": a, "end": b} for a, b in replay_bronze.periods(market_id)]
 
 
 @app.get("/api/status")

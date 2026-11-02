@@ -180,3 +180,12 @@ def test_replay_window_at_most_an_hour():
     client, conn = client_with(TOKENS)
     assert client.get("/api/markets/0xM/replay?start=2026-10-29T12:00:00Z&minutes=61").status_code == 422
     assert conn.calls == []
+
+
+def test_replay_periods(monkeypatch):
+    from pmdata.api import app as app_module
+    monkeypatch.setattr(app_module.replay_bronze, "periods", lambda m: [
+        (datetime(2026, 10, 29, 12, 0, tzinfo=UTC), datetime(2026, 10, 29, 13, 0, tzinfo=UTC))])
+    client, _ = client_with(TOKENS)
+    assert client.get("/api/markets/0xM/replay/periods").json() == [
+        {"start": "2026-10-29T12:00:00+00:00", "end": "2026-10-29T13:00:00+00:00"}]

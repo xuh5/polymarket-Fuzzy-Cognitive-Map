@@ -37,11 +37,12 @@ function fillBuckets(points: HistoryPoint[], bucketSeconds: number) {
 
 // 上栏：中间价走势（面积）+ 买一、卖一两条细线；下栏：每格成交量，看涨往上、看跌往下。
 // 滚轮缩放、拖动平移，双击时间轴复位；左上角显示鼠标所在时刻（不在图上时为最新 / 整段合计）的数值
-export default function PriceChart({ points, bucketSeconds, trades, tradeBucketSeconds }: {
+export default function PriceChart({ points, bucketSeconds, trades, tradeBucketSeconds, onPick }: {
   points: HistoryPoint[]
   bucketSeconds: number
   trades: TradeBucket[]
   tradeBucketSeconds: number   // 成交的格子（至少 1 分钟），是 bucketSeconds 的整数倍，时间点对得上
+  onPick?: (t: number) => void  // 点了图上某一刻（秒）
 }) {
   const box = useRef<HTMLDivElement>(null)
   const chart = useRef<IChartApi | null>(null)
@@ -51,6 +52,9 @@ export default function PriceChart({ points, bucketSeconds, trades, tradeBucketS
   } | null>(null)
   const fitted = useRef(false)
   const [hover, setHover] = useState<number | null>(null)   // 鼠标所在的时间（秒）
+  // 图表只建一次，点击回调放在 ref 里，拿到的总是最新的 onPick
+  const pick = useRef(onPick)
+  useEffect(() => { pick.current = onPick })
 
   // 图表只建一次，数据变了只换数据：重建会丢掉用户的缩放位置
   useEffect(() => {
@@ -108,6 +112,7 @@ export default function PriceChart({ points, bucketSeconds, trades, tradeBucketS
     }
     c.panes()[1].setHeight(VOL_H)
     c.subscribeCrosshairMove((p) => setHover(p.time == null ? null : (p.time as number)))
+    c.subscribeClick((p) => { if (p.time != null) pick.current?.(p.time as number) })
     chart.current = c
     return () => {
       c.remove()

@@ -158,3 +158,39 @@ export interface StatusCharts {
 
 export const fetchStatus = () => getJson<StatusSummary>('/api/status')
 export const fetchStatusCharts = (range: StatusRange) => getJson<StatusCharts>(`/api/status/charts?range=${range}`)
+
+// ---------- 回放（pmdata/replay/timeline.py） ----------
+// 时间 t 是交易所时间（毫秒）；o 是选项序号（Yes = 1）
+export type ReplayEvent =
+  | { t: number; type: 'change'; o: number; side: 'bid' | 'ask'; price: number; size: number }   // 这一档变成 size，0 = 没了
+  | { t: number; type: 'book'; o: number; bids: Level[]; asks: Level[] }                         // 官方完整清单，整份替换
+  | { t: number; type: 'trade'; o: number; side: 'BUY' | 'SELL'; price: number; size: number }   // side 是吃单方方向
+  | { t: number; type: 'gap' | 'closed' }                                                         // 断线 / 退订：盘口作废
+
+export interface ReplayOutcome {
+  outcome_index: number
+  outcome: string
+  asset_id: string
+  initial: { bids: Level[]; asks: Level[] } | null   // 起点那一刻的订单簿；null = 当时不可用
+}
+
+export interface Replay {
+  market_id: string
+  start: string
+  end: string
+  complete: boolean   // false：这段还没全部归档，后面一部分缺着
+  outcomes: ReplayOutcome[]
+  events: ReplayEvent[]
+}
+
+export const fetchReplay = (marketId: string, startIso: string, minutes: number) =>
+  getJson<Replay>(`/api/markets/${marketId}/replay?start=${encodeURIComponent(startIso)}&minutes=${minutes}`)
+
+// 能回放的时间段：这个市场在订阅名单里、录到了数据的几段（按时间排）
+export interface ReplayPeriod {
+  start: string
+  end: string
+}
+
+export const fetchReplayPeriods = (marketId: string) =>
+  getJson<ReplayPeriod[]>(`/api/markets/${marketId}/replay/periods`)

@@ -139,3 +139,13 @@ def test_bronze_start_is_oldest_latest_book_and_load_dedupes(tmp_path, monkeypat
         assert bronze.find_start(con, "0xM", at(10), 2) == at(2)
         envs = bronze.load(con, "0xM", at(2), at(30))
     assert [e["payload"]["timestamp"] for e in envs] == ["1", "2", "3"]
+
+
+def test_bronze_periods_split_at_unsubscribe(tmp_path, monkeypatch):
+    monkeypatch.setattr(bronze, "CLOB_DIR", tmp_path)
+    ch, unsub = change_msg(1, ("Y", "BUY", "0.4", "1")), {"payload": {"event_type": "unsubscribed"}}
+    unsub_at = datetime(2026, 10, 29, 12, 10, 59, 900000, tzinfo=UTC)
+    stray_at = datetime(2026, 10, 29, 12, 11, 0, 100000, tzinfo=UTC)   # 退订后 0.2 秒的在途消息，跨了分钟
+    write_bronze(tmp_path, [(0, 1, at(1), ch), (0, 2, at(5), ch), (0, 3, unsub_at, unsub),
+                            (0, 4, stray_at, ch), (0, 5, at(40), ch), (0, 6, at(50), ch)])
+    assert bronze.scan_periods() == {"0xM": [(at(1), unsub_at), (at(40), at(50))]}

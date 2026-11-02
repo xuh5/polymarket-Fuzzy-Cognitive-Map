@@ -34,6 +34,10 @@ export function endDate(iso: string | null): string | null {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+// 日期 + 时刻，如 Oct 20, 1:31 PM
+export const dateTime = (t: number) =>
+  new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+
 export function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 }
@@ -74,3 +78,10 @@ export const day = (iso: string) => new Date(iso).toLocaleDateString('en-US', { 
 
 // Oct 29, 4:00 PM
 export const dayClock = (iso: string) => `${day(iso)}, ${clock(iso)}`
+
+// 14:03:41.250（24 小时制，精确到毫秒，回放用）
+export function clockMs(t: number): string {
+  const d = new Date(t)
+  const hms = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return `${hms}.${String(d.getMilliseconds()).padStart(3, '0')}`
+}

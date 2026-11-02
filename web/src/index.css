@@ -730,6 +730,7 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
   grid-template-columns: 1fr 1fr;
   gap: 24px;
   margin-top: 16px;
+  align-items: start;   /* 一边档数少时不要被拉高去对齐另一边 */
 }
 
 .ladder th, .ladder td { padding: 6px 8px; font-size: 13px; }
@@ -1168,3 +1169,116 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
   .status-banner { flex-wrap: wrap; }
   .banner-updated { flex-basis: 100%; padding-left: 48px; }
 }
+
+/* ---------- 回放 ---------- */
+.replay-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.replay-start input {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.replay-start input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.replay-chart { cursor: pointer; touch-action: none; user-select: none; }
+.replay-mid { fill: none; stroke: var(--accent); stroke-width: 2; }
+.replay-edge { fill: none; stroke: var(--accent); stroke-opacity: 0.35; stroke-width: 1; }
+.trade-dot { stroke: var(--surface); stroke-width: 1.5; }
+.trade-dot.buy { fill: var(--up); }
+.trade-dot.sell { fill: var(--down); }
+.replay-future { fill: var(--surface); opacity: 0.55; pointer-events: none; }
+.playhead { stroke: var(--ink); stroke-width: 1.5; pointer-events: none; }
+
+.player {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 4px 4px;
+  flex-wrap: wrap;
+}
+
+.player .play {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.player .scrub { flex: 1; min-width: 160px; accent-color: var(--ink); }
+.player-time { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 96px; text-align: right; }
+
+.replay-grid { margin-top: 16px; grid-template-columns: minmax(0, 1fr) 360px; }
+.replay-unavailable { height: 260px; padding: 24px; text-align: center; }
+
+.feed { padding: 16px; }
+.feed h3 { margin: 0 0 10px; font-size: 15px; }
+.feed p { margin: 0; font-size: 13px; }
+.feed ol { list-style: none; margin: 0; padding: 0; }
+
+.feed li {
+  display: grid;
+  grid-template-columns: 92px 88px 1fr;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.feed li:first-child { border-top: 0; }
+.feed-time { color: var(--muted); }
+.feed-label { font-weight: 600; white-space: nowrap; }
+.feed-label.bids, .feed-label.buy { color: var(--up); }
+.feed-label.asks, .feed-label.sell { color: var(--down); }
+.feed-label.info { color: var(--ink-2); }
+.feed-text { color: var(--ink-2); }
+
+/* 订单簿里刚变动的档：变多闪绿、变少闪红，0.9 秒淡掉 */
+.ladder tr.flash-up { animation: flash-up 0.9s ease-out; }
+.ladder tr.flash-down { animation: flash-down 0.9s ease-out; }
+@keyframes flash-up { from { background: color-mix(in srgb, var(--up) 25%, transparent); } to { background: transparent; } }
+@keyframes flash-down { from { background: color-mix(in srgb, var(--down) 25%, transparent); } to { background: transparent; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ladder tr.flash-up, .ladder tr.flash-down { animation: none; }
+}
+
+@media (max-width: 860px) {
+  .replay-grid { grid-template-columns: 1fr; }
+}
+
+.periods {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 12px;
+  font-size: 12px;
+}
+
+.periods button {
+  font: inherit;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.periods button:hover { border-color: var(--border-strong); }
+.periods button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
