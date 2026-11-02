@@ -1,0 +1,10 @@
+// Cloudflare 部署配置：把 npm run build 打出的 dist/ 当静态网站发布（Workers 静态资源，不跑服务端代码）
+{
+  "name": "depthscope",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    // 单页应用：/markets/xxx 这类地址没有对应文件，一律返回 index.html，由前端路由处理
+    "not_found_handling": "single-page-application"
+  }
+}

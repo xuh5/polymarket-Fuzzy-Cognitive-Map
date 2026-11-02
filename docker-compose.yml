@@ -228,11 +228,25 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       REDIS_URL: redis://redis:6379/0
       PM_DATA_DIR: /app/data
+      API_CORS_ORIGINS: https://depthscope.app,https://www.depthscope.app   # 只让正式网站的网页调用
     volumes:
       - ./data:/app/data:ro          # 只读：回放从 bronze 读原始消息
     ports:
       - "127.0.0.1:8000:8000"        # 只给本机用；以后对外由 Cloudflare Tunnel 转发
     command: python -m pmdata.api.app --host 0.0.0.0
+    logging: *logging
+
+  # 对外通道：台式机主动连 Cloudflare，外面的请求顺着通道进来，不用开路由器端口。
+  # 网址 → 哪个服务在 Cloudflare 网页上配（Public Hostname 指向 http://api:8000）；令牌在 .env，不进 Git
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.1
+    container_name: cloudflared
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run
     logging: *logging
 
   # 看板：数据源和看板都写成文件放在 grafana/ 下（provisioning），重建容器不会丢
