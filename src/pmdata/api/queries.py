@@ -102,6 +102,35 @@ def market_tokens(conn, market_id):
 
 
 
+def depth_quality(conn, market_id, hours):
+    """某个市场的假深度识别结果：最新一分钟（10 分钟内没有就是 None）+ 过去 hours 小时每 5 分钟的走势。
+
+    规则和字段含义见 pmdata.depth.tracker。走势的比例按 5 分钟内的金额合计算，不是每分钟比例的平均。
+    """
+    latest = conn.execute(
+        """
+        select minute, depth_usd, suspicious_usd, levels
+        from depth_quality
+        where market_id = %s and minute > now() - interval '10 minutes'
+        order by minute desc
+        limit 1
+        """,
+        (market_id,),
+    ).fetchall()
+    history = conn.execute(
+        """
+        select date_bin(interval '5 minutes', minute, timestamptz '2000-01-01') as t,
+               100 * sum(suspicious_usd) / nullif(sum(depth_usd), 0) as flagged_pct
+        from depth_quality
+        where market_id = %s and minute > now() - make_interval(hours => %s)
+        group by 1
+        order by 1
+        """,
+        (market_id, hours),
+    ).fetchall()
+    return {"latest": latest[0] if latest else None, "history": history}
+
+
 def list_signals(conn, hours):
     """过去 hours 小时（按峰值时间）的所有 signal，最新的在前，带市场问题和第一个选项的名字。
 

@@ -160,6 +160,13 @@ def replay_periods(conn: Conn, market_id: str):
     return [{"start": a, "end": b} for a, b in replay_bronze.periods(market_id)]
 
 
+@app.get("/api/markets/{market_id}/depth-quality")
+def depth_quality(conn: Conn, market_id: str, hours: Annotated[int, Query(ge=1, le=168)] = 24):
+    """假深度识别：最新一分钟的深度、可疑金额和可疑价位，加走势。这个市场最近没数据时 latest = null，不报错。"""
+    tokens_or_404(conn, market_id)
+    return queries.depth_quality(conn, market_id, hours)
+
+
 @app.get("/api/signals")
 def signals(conn: Conn, hours: Annotated[int, Query(ge=1, le=720)] = 168):
     """过去 hours 小时的价格跳动（候选门槛 3 个点，网页自己筛）。字段含义见 pmdata.signals.detector。"""

@@ -6,7 +6,7 @@ The goal is a public order book analytics site built on this pipeline: flag susp
 
 Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 
-> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is live at [depthscope.app](https://depthscope.app) with market pages (depth chart, slippage calculator, tick-by-tick replay), a Signals page of detected price moves, and a status page. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
+> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is live at [depthscope.app](https://depthscope.app) with market pages (depth chart, slippage calculator, tick-by-tick replay, depth quality), a Signals page of detected price moves, and a status page. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
 
 ## Architecture
 
@@ -31,6 +31,8 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
                                                                  web (React, TypeScript) on Cloudflare Workers
 ```
 
+A separate `depth` service also reads `pm.raw.clob` and writes `pm.metrics.depth`, which pg-sink stores in Postgres.
+
 | Layer | What it does | Code |
 |---|---|---|
 | Ingestion | Pulls the market catalog every hour; streams order book snapshots, price-level changes, and trades over WebSocket; polls comments. Handles reconnects, gap markers, and dynamic resubscription. | `src/pmdata/ingest/` |
@@ -40,7 +42,8 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 | Real-time metrics | Mid price, spread, microprice, top-1/top-5 imbalance, depth within ±1¢ and ±5¢, log-odds price change over 1/5/15/60 minutes, and per-minute trade flow (aggressive buy vs. sell). The current order book of every token is also synced to Redis once a second. | `src/pmdata/metrics/` |
 | Replay | Rebuilds any recorded window (up to 60 minutes) from the bronze archive: the full order book at the start plus every change and trade after it, at millisecond resolution. The exchange resends the full book on every trade and reconnect, so no extra snapshots are stored. | `src/pmdata/replay/` |
 | Signals | Detects sudden price moves: the first outcome's mid moves ≥ 3 points against 5 minutes earlier (moves within 5 minutes merge into one). Each move records how the book moved (both sides, spread widened, spread narrowed), trades and flow during the move, volume vs. the market's usual 24h volume, and the price 5 and 30 minutes later. Written to a compacted topic as open → closed → final. The threshold is deliberately low; the website filters. Prices are only compared within one continuous stretch of order book data, so resubscribing or a long disconnect can't fake a jump. | `src/pmdata/signals/` |
-| Website | FastAPI backend reads the live order book from Redis, metrics and signals from Postgres, and replays from bronze; it never touches Kafka or DuckDB. The React + TypeScript front end polls it every few seconds: market list, market page with depth chart, slippage calculator and replay, Signals page with shareable filters (each move links to its replay), and the status page. Public access: the API goes out through a Cloudflare Tunnel (no open ports at home, rate-limited at Cloudflare, CORS limited to the site); the front end is static assets on Cloudflare Workers, rebuilt on every push. | `src/pmdata/api/`, `web/` |
+| Depth quality | Flags money that keeps appearing and vanishing near the best price. The feed only shows the total size at each price, so changes are split into inferred blocks. A price is flagged after 5 or more blocks of $1,000+ were pulled within 10 minutes with under 5% filled in the past hour, and only money placed there in the last 10 minutes counts as flagged. Pulls within 1 second of a trade are noted as extra context. This describes order behavior only: it can't show who placed the orders or why. | `src/pmdata/depth/` |
+| Website | FastAPI backend reads the live order book from Redis, metrics and signals from Postgres, and replays from bronze; it never touches Kafka or DuckDB. The React + TypeScript front end polls it every few seconds: market list, market page with depth chart, slippage calculator, replay and depth quality, Signals page with shareable filters (each move links to its replay), and the status page. Public access: the API goes out through a Cloudflare Tunnel (no open ports at home, rate-limited at Cloudflare, CORS limited to the site); the front end is static assets on Cloudflare Workers, rebuilt on every push. | `src/pmdata/api/`, `web/` |
 | Serving and alerting | Idempotent upsert into Postgres; Grafana dashboard and alert rules provisioned from files. Alerts (pipeline stalled, market catalog stale) and failed Airflow tasks are sent to Discord. | `src/pmdata/sink/`, `grafana/` |
 | Pipeline health | Every minute, records each consumer group's lag (committed offset vs. end offset, per partition) into Postgres; throughput is derived from the same offsets. Collector reconnects and their downtime are rebuilt from the gap markers in the raw stream. Per-minute p50/p99 latency is kept for each hop (exchange → received → computed → stored). Since the feed has no sequence numbers, missed messages are detected indirectly: the service keeps its own order book and counts how often its best bid/ask disagrees with the values the exchange attaches to each update; it also counts out-of-order exchange timestamps. | `src/pmdata/health/` |
 | Orchestration | Airflow 3 (LocalExecutor) runs `dbt build` daily at 01:00 UTC, so models and tests are rebuilt on yesterday's complete data. dbt lives in its own virtualenv inside the Airflow image, and DuckDB is capped at 4 GB / 2 threads so the batch job cannot starve the live collectors. | `airflow/` |
@@ -109,7 +112,7 @@ Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow 
 ## Roadmap
 
 - More signal types: liquidity pulled, large sweeps, unusual volume
-- Suspicious depth: per price level, flag large orders that are repeatedly placed and pulled with little trading, and score each market
+- Depth quality: a ranking of markets on the home page, and an estimate of how likely each block is to stay
 - Alerts for large moves, suspicious depth, and liquidity drops, pushed to a public Discord or Telegram channel (reusing the Signals filter format as push rules)
 - More scheduled jobs (data quality checks, reconciliation against the official API, compaction of small Parquet files) and an external heartbeat
 - Possibly porting metrics to Kafka Streams or Flink for comparison

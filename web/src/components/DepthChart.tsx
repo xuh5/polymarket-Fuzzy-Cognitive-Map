@@ -8,14 +8,25 @@ const H = 260
 const M = { top: 28, right: 12, bottom: 26, left: 52 }   // 上边留出放 Bids / Asks 标签的地方
 
 // 累计深度：从最优价往外，每一档把挂单金额（价格 × 份数）累加起来
-function cumulative(levels: Level[], inRange: (p: number) => boolean) {
+// flaggedAt：这一档可疑的金额，flaggedCum 是到这一档为止可疑的金额
+function cumulative(levels: Level[], inRange: (p: number) => boolean, flaggedAt: (p: number) => number) {
   let total = 0
-  return levels.filter(([p]) => inRange(p)).map(([p, s]) => ({ p, cum: (total += p * s) }))
+  let flaggedTotal = 0
+  return levels.filter(([p]) => inRange(p)).map(([p, s]) => {
+    const prev = total
+    total += p * s
+    const flagged = Math.min(flaggedAt(p), p * s)
+    flaggedTotal += flagged
+    return { p, prev, cum: total, flagged, flaggedCum: flaggedTotal }
+  })
 }
 
 // 深度图：横轴是价格，买盘在左、卖盘在右，纵轴是「从最优价到这个价位一共挂了多少美元」。
 // 一眼看出盘口两边厚不厚、哪边薄
-export default function DepthChart({ bids, asks, range }: { bids: Level[]; asks: Level[]; range: number }) {
+// flagged：传了就把每档可疑的金额换颜色（累计图里，一档的金额就是从它的价格一直铺到图边上的一层）
+export default function DepthChart({ bids, asks, range, flagged }: {
+  bids: Level[]; asks: Level[]; range: number; flagged?: (side: 'bid' | 'ask', price: number) => number
+}) {
   const [ref, width] = useWidth<HTMLDivElement>()
   const [hoverX, setHoverX] = useState<number | null>(null)
 
@@ -27,8 +38,8 @@ export default function DepthChart({ bids, asks, range }: { bids: Level[]; asks:
   const center = bestBid != null && bestAsk != null ? (bestBid + bestAsk) / 2 : (bestBid ?? bestAsk)!
   const lo = Math.max(0, center - range)
   const hi = Math.min(1, center + range)
-  const b = cumulative(bids, (p) => p >= lo)
-  const a = cumulative(asks, (p) => p <= hi)
+  const b = cumulative(bids, (p) => p >= lo, (p) => flagged?.('bid', p) ?? 0)
+  const a = cumulative(asks, (p) => p <= hi, (p) => flagged?.('ask', p) ?? 0)
   const rawMax = Math.max(b.at(-1)?.cum ?? 0, a.at(-1)?.cum ?? 0, 1)
   const maxCum = Math.ceil(rawMax / niceStep(rawMax, 4)) * niceStep(rawMax, 4)   // 纵轴顶取整，如 $3,000
 
@@ -47,19 +58,24 @@ export default function DepthChart({ bids, asks, range }: { bids: Level[]; asks:
     return d + `L${x(edge)},${y(pts.at(-1)!.cum)}L${x(edge)},${base}Z`
   }
 
+  const bands = (pts: typeof b, edge: number) => pts.filter((l) => l.flagged > 0).map((l) => (
+    <rect key={l.p} x={Math.min(x(l.p), x(edge))} width={Math.abs(x(edge) - x(l.p))}
+      y={y(l.cum)} height={y(l.cum - l.flagged) - y(l.cum)} className="depth-flagged" />
+  ))
+
   const yTicks = ticks(0, maxCum, 4)
   const xTicks = ticks(lo, hi, 6)
 
   // 鼠标所在价格的累计深度：在买一左边看买盘，在卖一右边看卖盘
-  let tip: { side: 'Bids' | 'Asks'; price: number; cum: number } | null = null
+  let tip: { side: 'Bids' | 'Asks'; price: number; cum: number; flagged: number } | null = null
   if (hoverX != null) {
     const price = lo + ((hoverX - M.left) / iw) * (hi - lo)
     if (bestBid != null && price <= bestBid) {
       const hit = b.filter((l) => l.p >= price).at(-1)
-      if (hit) tip = { side: 'Bids', price, cum: hit.cum }
+      if (hit) tip = { side: 'Bids', price, cum: hit.cum, flagged: hit.flaggedCum }
     } else if (bestAsk != null && price >= bestAsk) {
       const hit = a.filter((l) => l.p <= price).at(-1)
-      if (hit) tip = { side: 'Asks', price, cum: hit.cum }
+      if (hit) tip = { side: 'Asks', price, cum: hit.cum, flagged: hit.flaggedCum }
     }
   }
 
@@ -79,6 +95,8 @@ export default function DepthChart({ bids, asks, range }: { bids: Level[]; asks:
         ))}
         <path d={stepPath(b, lo)} className="depth bids" />
         <path d={stepPath(a, hi)} className="depth asks" />
+        {bands(b, lo)}
+        {bands(a, hi)}
         <line x1={x(center)} x2={x(center)} y1={M.top} y2={base} className="mid-line" />
         {/* 直接标出哪边是买盘、哪边是卖盘，不只靠颜色 */}
         <text x={M.left} y={14} className="series-label bids">Bids</text>
@@ -89,6 +107,7 @@ export default function DepthChart({ bids, asks, range }: { bids: Level[]; asks:
         <div className="tooltip" style={{ left: Math.min(hoverX + 12, W - 170), top: M.top }}>
           <div className="tt-time">{tip.side} {tip.side === 'Bids' ? '≥' : '≤'} {cents(tip.price)}</div>
           <div><b>{usd(tip.cum)}</b> resting</div>
+          {tip.flagged > 0 && <div><b>{usd(tip.flagged)}</b> flagged</div>}
         </div>
       )}
     </div>

@@ -199,6 +199,25 @@ export interface ReplayPeriod {
 export const fetchReplayPeriods = (marketId: string) =>
   getJson<ReplayPeriod[]>(`/api/markets/${marketId}/replay/periods`)
 
+// ---------- 假深度识别（pmdata/depth/tracker.py） ----------
+export interface FlaggedLevel {
+  side: 'BUY' | 'SELL'   // 第一个选项盘口的买 / 卖
+  price: number
+  usd: number            // 这个价位现在挂着的金额
+  flagged_usd: number    // 其中可疑的部分（挂了不到 10 分钟的）
+  flashes: number        // 过去 1 小时闪现几次
+  filled_usd: number     // 这些闪现合计成交了多少
+  reactions: number      // 过去 1 小时有几次：有成交后 1 秒内被撤掉一半以上
+}
+
+export interface DepthQuality {
+  latest: { minute: string; depth_usd: number; suspicious_usd: number; levels: FlaggedLevel[] } | null   // null = 最近没数据
+  history: { t: string; flagged_pct: number | null }[]   // 每 5 分钟
+}
+
+export const fetchDepthQuality = (marketId: string, hours: number) =>
+  getJson<DepthQuality>(`/api/markets/${marketId}/depth-quality?hours=${hours}`)
+
 // ---------- Signals（pmdata/signals/；时间是 ISO 字符串，价格 0～1） ----------
 // 每条 signal 有类型 kind，目前只有 jump（价格跳动，字段见 detector.py）；以后的新类型加在 SignalKind 里
 export type SignalKind = 'jump'

@@ -541,6 +541,28 @@ tr.stale td { opacity: 0.5; }
   padding: 48px 20px;
 }
 
+.depth-method { font-size: 14px; line-height: 1.55; }
+.depth-method h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--ink); }
+.depth-method p { margin: 0 0 8px; }
+.depth-method p:last-child { margin-bottom: 0; }
+.depth-caption { margin: 8px 2px 16px; font-size: 13px; }
+.depth-flagged { fill: var(--warn); fill-opacity: 0.75; }
+
+/* Depth quality 的订单簿：可疑的价位整行标色，旁边写明原因，不只靠颜色 */
+.quality-ladder { max-height: 640px; overflow-y: auto; }
+.quality-ladder th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.quality-ladder td { padding: 6px 16px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.quality-ladder th:first-child, .quality-ladder td:first-child { width: 90px; }
+.quality-ladder .val { position: relative; width: 30%; min-width: 110px; text-align: right; }
+.quality-ladder .bar { position: absolute; left: 16px; top: 50%; height: 20px; transform: translateY(-50%); max-width: calc(100% - 32px); border-radius: 3px; }
+.quality-ladder .amount { position: relative; }
+.quality-ladder tr.bids .bar { background: var(--up-soft); }
+.quality-ladder tr.asks .bar { background: var(--down-soft); }
+.quality-ladder tr.flagged { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.quality-ladder .bar-flagged { display: block; height: 100%; background: var(--warn); border-radius: 3px; }
+.quality-ladder .note { color: var(--ink-2); }
+.quality-ladder .spread-row td { text-align: center; color: var(--muted); font-size: 12px; background: var(--bg); }
+
 /* ---------- 可点击 ---------- */
 tr.clickable { cursor: pointer; }
 td a.q { display: inline; }

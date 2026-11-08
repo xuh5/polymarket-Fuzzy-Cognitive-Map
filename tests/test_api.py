@@ -58,6 +58,27 @@ def test_markets_rejects_bad_hours():
     assert conn.calls == []
 
 
+def test_depth_quality_404_for_unknown_market():
+    client, _ = client_with([])
+    assert client.get("/api/markets/0xM/depth-quality").status_code == 404
+
+
+def test_depth_quality_passes_market_and_hours():
+    client, conn = client_with([{"minute": "t", "depth_usd": 100.0, "suspicious_usd": 49.0, "levels": []}])
+    r = client.get("/api/markets/0xM/depth-quality?hours=6")
+    assert r.status_code == 200
+    assert r.json()["latest"]["suspicious_usd"] == 49.0
+    assert len(r.json()["history"]) == 1
+    assert [c[1] for c in conn.calls[1:]] == [("0xM",), ("0xM", 6)]
+
+
+def test_depth_quality_rejects_bad_hours():
+    client, conn = client_with([])
+    assert client.get("/api/markets/0xM/depth-quality?hours=0").status_code == 422
+    assert client.get("/api/markets/0xM/depth-quality?hours=1000").status_code == 422
+    assert conn.calls == []
+
+
 def test_history_404_when_empty():
     client, conn = client_with([])
     r = client.get("/api/markets/0xM/history?minutes=30")

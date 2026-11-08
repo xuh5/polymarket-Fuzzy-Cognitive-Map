@@ -4,6 +4,7 @@ import { fetchBook, fetchHistory, fetchMarket, fetchReplayPeriods, fetchTrades, 
 import BookLadder from '../components/BookLadder'
 import Change from '../components/Change'
 import DepthChart from '../components/DepthChart'
+import DepthQualityPanel from '../components/DepthQualityPanel'
 import Labels from '../components/Labels'
 import PriceChart from '../components/PriceChart'
 import ReplayPanel from '../components/ReplayPanel'
@@ -154,7 +155,7 @@ export default function MarketPage() {
           initialStart={replayStart} initialLength={replayLength} initialAt={replayAt ?? (Number(params.get('at')) || null)}
           onWindowChange={setReplayWindow} />
       )}
-      {tab === 'Depth quality' && <div className="card notice placeholder">Coming soon.</div>}
+      {tab === 'Depth quality' && <DepthQualityPanel marketId={marketId} outcome={first.outcome} />}
 
       {tab === 'Overview' && (
         <>

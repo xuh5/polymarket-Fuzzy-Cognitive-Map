@@ -59,7 +59,8 @@ def test_five_flashes_flag_the_level_with_its_current_amount():
     assert s["market"] == MARKET and s["ts"] == 60_000
     assert s["suspicious_usd"] == 1470
     assert s["depth_usd"] == 50 + 1470 + 52
-    assert s["levels"] == [{"side": "BUY", "price": 0.49, "usd": 1470, "flashes": 5, "filled_usd": 0}]
+    assert s["levels"] == [{"side": "BUY", "price": 0.49, "usd": 1470, "flagged_usd": 1470, "flashes": 5,
+                            "filled_usd": 0, "reactions": 0}]
 
 
 def test_four_flashes_is_not_enough():
@@ -154,8 +155,8 @@ def test_trade_hits_oldest_lot():
         size -= 300
         t.apply(change(ts + 500, "BUY", "0.49", str(size + 3000)))
         t.apply(change(ts + 1000, "BUY", "0.49", str(size)))
-    assert report(t)[0]["levels"] == [
-        {"side": "BUY", "price": 0.49, "usd": 735, "flashes": 5, "filled_usd": 0}]
+    level = report(t)[0]["levels"][0]
+    assert (level["usd"], level["flashes"], level["filled_usd"]) == (735, 5, 0)
 
 
 def test_small_far_or_long_lived_lots_are_not_flashes():
@@ -222,7 +223,7 @@ def test_gap_invalidates_book_but_keeps_flash_history():
     assert t.ignored == 1
     assert report(t) == []                              # 盘口不可用时不输出
     t.apply(book(ts=50_000, bids=(("0.50", "100"), ("0.49", "3000"))))
-    assert report(t)[0]["suspicious_usd"] == 1470
+    assert report(t)[0]["suspicious_usd"] == 0          # 快照里的量不知道挂了多久，不算
 
 
 def test_gap_processes_changes_received_before_it():
@@ -264,3 +265,94 @@ def test_quiet_market_outputs_every_interval_with_same_state():
     out = t.advance(190_000)
     assert [s["ts"] for s in out] == [60_000, 120_000, 180_000]
     assert t.advance(190_000) == []
+
+
+def resting(t, ts=30_000, size="3000"):
+    """先闪现 5 次让价位被标记，再挂一笔留着。"""
+    flashes(t)
+    t.apply(change(ts, "BUY", "0.49", size))
+
+
+def test_only_recently_placed_money_is_suspicious():
+    t = tracker()
+    t.apply(change(2000, "BUY", "0.49", "3000"))      # 老块，到 720 秒时已经挂了 10 分钟以上
+    for i in range(5):
+        ts = 700_000 + i * 2000
+        t.apply(change(ts, "BUY", "0.49", "6000"))
+        t.apply(change(ts + 1000, "BUY", "0.49", "3000"))
+    t.apply(change(712_000, "BUY", "0.49", "4000"))   # 新挂 1000 份，$490
+    s = [x for x in t.advance(722_000) if x["ts"] == 720_000][0]
+    assert s["suspicious_usd"] == 490
+    assert s["levels"][0]["usd"] == 1960 and s["levels"][0]["flagged_usd"] == 490
+
+
+def test_flagged_level_with_only_old_money_is_not_listed():
+    t = tracker()
+    t.apply(change(2000, "BUY", "0.49", "3000"))
+    for i in range(5):
+        ts = 3000 + i * 2000
+        t.apply(change(ts, "BUY", "0.49", "6000"))
+        t.apply(change(ts + 1000, "BUY", "0.49", "3000"))
+    out = [x for x in t.advance(662_000) if x["ts"] == 660_000][0]
+    assert out["levels"] == [] and out["suspicious_usd"] == 0
+
+
+def test_cancel_within_a_second_of_a_trade_counts_as_reaction():
+    t = tracker()
+    resting(t)
+    t.apply(trade(40_000, "0.50", "10", "SELL"))      # 主动卖吃买盘：买盘这一侧受影响
+    t.apply(change(40_500, "BUY", "0.49", "1000"))    # 撤掉 2/3
+    assert report(t)[0]["levels"][0]["reactions"] == 1
+
+
+def test_reaction_needs_half_the_level_within_a_second():
+    small_cut, late_cut = tracker(), tracker()
+    resting(small_cut)
+    small_cut.apply(trade(40_000, "0.50", "10", "SELL"))
+    small_cut.apply(change(40_500, "BUY", "0.49", "2000"))    # 只撤 1/3
+    resting(late_cut)
+    late_cut.apply(trade(40_000, "0.50", "10", "SELL"))
+    late_cut.apply(change(41_500, "BUY", "0.49", "1000"))     # 1.5 秒后才撤
+    assert report(small_cut)[0]["levels"][0]["reactions"] == 0
+    assert report(late_cut)[0]["levels"][0]["reactions"] == 0
+
+
+def test_filled_amount_is_not_a_reaction():
+    t = tracker()
+    resting(t)
+    t.apply(trade(40_100, "0.49", "2000", "SELL"))            # 这笔成交吃掉了减少的量
+    t.apply(change(40_200, "BUY", "0.49", "1000"))
+    assert report(t)[0]["levels"][0]["reactions"] == 0
+
+
+def test_trades_on_the_other_side_do_not_count():
+    t = tracker()
+    resting(t)
+    t.apply(trade(40_000, "0.52", "10", "BUY"))               # 主动买吃卖盘，买盘这一侧没受影响
+    t.apply(change(40_500, "BUY", "0.49", "1000"))
+    assert report(t)[0]["levels"][0]["reactions"] == 0
+
+
+def test_trade_on_second_outcome_triggers_the_converted_side():
+    t = tracker()
+    resting(t)
+    t.apply(trade(40_000, "0.50", "10", "BUY", asset="N"))    # 买 No = 吃 Yes 买盘
+    t.apply(change(40_500, "BUY", "0.49", "1000"))
+    assert report(t)[0]["levels"][0]["reactions"] == 1
+
+
+def test_a_split_trade_counts_once():
+    t = tracker()
+    resting(t)
+    t.apply(trade(40_000, "0.50", "10", "SELL"))
+    t.apply(trade(40_100, "0.50", "10", "SELL"))              # 同一笔大单拆出来的
+    t.apply(change(40_500, "BUY", "0.49", "1000"))
+    assert report(t)[0]["levels"][0]["reactions"] == 1
+
+
+def test_reaction_alone_does_not_flag_a_level():
+    t = tracker()
+    t.apply(change(30_000, "BUY", "0.49", "3000"))
+    t.apply(trade(40_000, "0.50", "10", "SELL"))
+    t.apply(change(40_500, "BUY", "0.49", "1000"))
+    assert report(t)[0]["levels"] == []

@@ -6,7 +6,9 @@
 
 判定规则（2026-11-08 按 bronze 探索定的）：
 - 闪现：一个块 >= $1000、挂出时离本侧最优价 5 分内、成交不到 5%、10 分钟内就没了
-- 可疑价位：过去 1 小时闪现 >= 5 次；这个价位现在挂着的金额算可疑金额
+- 可疑价位：过去 1 小时闪现 >= 5 次
+- 可疑金额：可疑价位上挂了不到 10 分钟的部分。挂得久的（包括快照里本来就有的）不算，它们不是闪现的单
+- 见势就撤（附加说明，单独不算可疑）：有成交后 1 秒内，附近一个 >= $1000 的价位被撤掉一半以上
 单看「没成交就撤」区分不了好坏（大单 86% 都这样），反复闪现才是少数价位才有的特征。
 闪现也可能是做市机器人在正常调价，这里只陈述发生了什么，不判断意图。
 
@@ -33,6 +35,9 @@ FLASH_MAX_LIFE_MS = 600_000
 FLASH_MAX_FILL = 0.05
 FLASH_WINDOW_MS = 3_600_000
 MIN_FLASHES = 5
+REACTION_WINDOW_MS = 1_000   # 有成交后这么久内撤单算「见势就撤」（人手来不及）
+REACTION_MIN_CANCEL = 0.5    # 撤掉这一档多大比例才算
+REACTION_COOLDOWN_MS = 1_000  # 一笔大单常拆成好几笔成交，同一侧隔不到这么久只算一次
 INTERVAL_MS = 60_000         # 每个市场多久输出一次
 NO_LIMIT = float("inf")
 
@@ -62,6 +67,10 @@ class MarketState:
         self.pending = deque()    # 压着还没处理的盘口变化 (时间, [变化])
         self.trades = {}          # (挂单方一侧, 价格) → [[时间, 没配上的份额]]，按时间排序
         self.flashes = {}         # (一侧, 价格) → deque[(结束时间, 成交金额)]
+        self.reactions = {}       # (一侧, 价格) → deque[(时间,)]：见势就撤的记录
+        self.trade_events = []    # 还没开始观察的成交 (时间, 挂单方一侧)，按时间排序
+        self.windows = []         # 正在观察的成交：看接下来 1 秒内附近价位撤了多少
+        self.last_window = {}     # 一侧 → 最近一次开始观察的时间
         self.watermark = 0        # 这个市场见过的最新交易所时间
         self.next_output = None
 
@@ -83,6 +92,7 @@ class DepthTracker:
         self.interval_ms = interval_ms
         self.markets = {}                # 市场 ID → MarketState
         self.ignored = 0                 # 盘口不可用时收到、被忽略的 price_change 条数
+        self.reaction_count = 0          # 累计见势就撤的次数
 
     def apply(self, env):
         """处理一条信封，返回这次到期的市场汇总（格式见 _summary）。"""
@@ -118,6 +128,7 @@ class DepthTracker:
             return []
         out = self._drain(state, NO_LIMIT, tail=False)   # 断线之前收到的变化是有效的，先处理完
         state.book, state.next_output = None, None
+        state.trade_events, state.windows = [], []
         if p["event_type"] == "unsubscribed":
             del self.markets[p["market"]]
         # 断线（gap）不清闪现记录：挂单行为的历史不因为我们断了几秒而失效
@@ -164,6 +175,8 @@ class DepthTracker:
         bisect.insort(trades, [ts, size])
         keep_from = bisect.bisect_left(trades, [ts - TRADE_KEEP_MS])
         del trades[:keep_from]
+        if state.book is not None:
+            bisect.insort(state.trade_events, (ts, key[0]))
         return self._touch(state, ts)
 
     def _touch(self, state, ts):
@@ -175,10 +188,14 @@ class DepthTracker:
         out = []
         while state.pending and state.pending[0][0] + MATCH_WINDOW_MS <= up_to:
             ts, changes = state.pending.popleft()
+            self._open_windows(state, ts)
+            self._close_windows(state, ts)
             self._outputs(state, ts, out)
             for change in changes:
                 self._change(state, ts, *change)
         if tail:
+            self._open_windows(state, up_to - MATCH_WINDOW_MS)
+            self._close_windows(state, up_to - MATCH_WINDOW_MS)
             self._outputs(state, up_to - MATCH_WINDOW_MS, out)
         return out
 
@@ -188,6 +205,38 @@ class DepthTracker:
         while state.next_output <= until:
             out.append(self._summary(state, state.next_output))
             state.next_output += self.interval_ms
+
+    @staticmethod
+    def _open_windows(state, until):
+        """until 之前的成交：记下那一刻挂单方一侧 5¢ 内的大价位，接下来 1 秒看它们撤了多少。"""
+        if state.book is None:
+            return
+        while state.trade_events and state.trade_events[0][0] <= until:
+            t, side = state.trade_events.pop(0)
+            if t - state.last_window.get(side, -REACTION_COOLDOWN_MS) < REACTION_COOLDOWN_MS:
+                continue
+            state.last_window[side] = t
+            levels = {}
+            for price, level in state.book[side].items():
+                d = distance(side, price, *state.best)
+                if d is not None and d <= NEAR_PRICE and level.total * price >= FLASH_MIN_USD:
+                    levels[price] = [level.total * price, 0.0]   # [当时的金额, 之后撤掉的金额]
+            if levels:
+                state.windows.append((t, side, levels))
+
+    def _close_windows(self, state, ts):
+        """观察满 1 秒的成交：撤掉一半以上的价位记一次见势就撤。"""
+        remaining = []
+        for window in state.windows:
+            t, side, levels = window
+            if ts <= t + REACTION_WINDOW_MS:
+                remaining.append(window)
+                continue
+            for price, (usd, cancelled) in levels.items():
+                if cancelled / usd >= REACTION_MIN_CANCEL:
+                    state.reactions.setdefault((side, price), deque()).append((t,))
+                    self.reaction_count += 1
+        state.windows = remaining
 
     def _change(self, state, ts, side, price, new_size, best_bid, best_ask):
         state.best = (best_bid, best_ask)
@@ -203,6 +252,10 @@ class DepthTracker:
             return
         fill = self._match_trades(state, side, price, ts, -delta)
         cancel = -delta - fill
+        if cancel > EPS:
+            for t, window_side, window_levels in state.windows:
+                if window_side == side and t < ts <= t + REACTION_WINDOW_MS and price in window_levels:
+                    window_levels[price][1] += cancel * price
         while fill > EPS and level.lots:     # 被吃掉：先挂的先成交
             lot = level.lots[0]
             x = min(lot.remaining, fill)
@@ -251,12 +304,13 @@ class DepthTracker:
     def _summary(self, state, ts):
         """这一刻离最优价 5 分内的深度（第一个选项的盘口，买卖两侧）、其中可疑的金额，和每个可疑价位。"""
         cutoff = ts - FLASH_WINDOW_MS
-        for key in list(state.flashes):
-            q = state.flashes[key]
-            while q and q[0][0] < cutoff:
-                q.popleft()
-            if not q:
-                del state.flashes[key]
+        for series in (state.flashes, state.reactions):
+            for key in list(series):
+                q = series[key]
+                while q and q[0][0] < cutoff:
+                    q.popleft()
+                if not q:
+                    del series[key]
         depth = suspicious = 0.0
         flagged = []
         for side, levels in state.book.items():
@@ -267,10 +321,15 @@ class DepthTracker:
                 usd = level.total * price
                 depth += usd
                 flashes = state.flashes.get((side, price), ())
-                if len(flashes) >= MIN_FLASHES:
-                    suspicious += usd
-                    flagged.append({"side": side, "price": price, "usd": round(usd, 2), "flashes": len(flashes),
-                                    "filled_usd": round(sum(f for _, f in flashes), 2)})
-        flagged.sort(key=lambda x: -x["usd"])
+                if len(flashes) < MIN_FLASHES:
+                    continue
+                recent = sum(lot.remaining * price for lot in level.lots
+                             if lot.added_at is not None and ts - lot.added_at < FLASH_MAX_LIFE_MS)
+                if recent > EPS:
+                    suspicious += recent
+                    flagged.append({"side": side, "price": price, "usd": round(usd, 2), "flagged_usd": round(recent, 2),
+                                    "flashes": len(flashes), "filled_usd": round(sum(f for _, f in flashes), 2),
+                                    "reactions": len(state.reactions.get((side, price), ()))})
+        flagged.sort(key=lambda x: -x["flagged_usd"])
         return {"market": state.market, "ts": ts, "depth_usd": round(depth, 2), "suspicious_usd": round(suspicious, 2),
                 "levels": flagged}

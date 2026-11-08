@@ -275,9 +275,9 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 
 - 市场标签（2026-11-02，用户要求只上市场页、Signals 先不加）：Polymarket 自带标签（`include_tag=true`）太乱不用——每个市场 4～12 个、有平台内部标签、按事件打所以不准（百度的市场挂着 Anthropic）。改为 `src/pmdata/topics/rules.py` 按问题文字分：一个话题（10 类，归不进去是 Other）+ 问题里最先提到的公司。pg-sink 写表 market_labels（每个市场一行，source 记谁打的），启动时按现行规则把 tokens 里所有市场重打一遍。**给用户留位置**：以后用户用 AI 理解市场话题（Fuzzy Map 也要用），写同一张表、source 用 ai / manual，规则不覆盖它们。
 
-- 模块 2 判定规则（2026-11-08 用户同意，基于 11-05～07 bronze 探索）：价位过去 1 小时内出现 ≥5 次「≥$1000、离最优价 5 分内、成交 <5%、10 分钟内撤」的大单就标可疑，当前挂单金额计入可疑金额；市场可信度看可疑金额占 5 分内深度的比例。计划书的「没成交就撤」单独用区分不了（大单 86% 都符合），「靠近即撤」很少见（约 6%）。实现（用户同意）：Python（不用 Flink），单独的 depth 服务（group pm-depth，容器 depth，2026-11-08 12:44 UTC 起运行）→ pm.metrics.depth → pg-sink → 表 depth_quality（按市场每分钟一行，留 7 天）。
+- 模块 2 判定规则（2026-11-08 用户同意，基于 11-05～07 bronze 探索）：价位过去 1 小时内出现 ≥5 次「≥$1000、离最优价 5 分内、成交 <5%、10 分钟内撤」的大单就标可疑，只有这一档挂了不到 10 分钟的部分计入可疑金额（2026-11-08 用户同意；整档算会把六成久挂的钱也算进去）；「有成交后 1 秒内被撤掉一半以上」只作附加说明，单独不算可疑（平时 0.55%、成交后 7.2%，但反复出现的很少）；市场可信度看可疑金额占 5 分内深度的比例。计划书的「没成交就撤」单独用区分不了（大单 86% 都符合），「靠近即撤」很少见（约 6%）。实现（用户同意）：Python（不用 Flink），单独的 depth 服务（group pm-depth，容器 depth，2026-11-08 12:44 UTC 起运行）→ pm.metrics.depth → pg-sink → 表 depth_quality（按市场每分钟一行，留 7 天）。
 
-- **当前进度（2026-11-08）**：模块 1、5、3 完成，Signals（跳动）和市场标签上线，网站已公开（depthscope.app，见上面「部署」）。模块 2 后端已上线，下一个：Depth quality 网页和接口。用户待办：Cloudflare 账号开 2FA；换 tunnel 令牌（旧的贴进过聊天），改 .env 后 `up -d --no-deps cloudflared`。没定的：Signals 是否也显示话题标签、更多 signal 类型、推送（模块 4）。
+- **当前进度（2026-11-08）**：模块 1、5、3 完成，Signals（跳动）和市场标签上线，网站已公开（depthscope.app，见上面「部署」）。模块 2 后端已上线，市场详情页 Depth quality 标签已做（接口 `/api/markets/{id}/depth-quality`；实时订单簿 + 深度图，可疑价位标色）。模块 2 剩下：实时 vs 回放对账、首页榜单。用户待办：Cloudflare 账号开 2FA；换 tunnel 令牌（旧的贴进过聊天），改 .env 后 `up -d --no-deps cloudflared`。没定的：Signals 是否也显示话题标签、更多 signal 类型、推送（模块 4）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。
