@@ -12,6 +12,7 @@ TOPIC_CLOB = "pm.raw.clob"
 TOPIC_COMMENTS = "pm.raw.comments"
 TOPIC_METRICS_BOOK = "pm.metrics.book"       # 盘口类指标，按 token 每秒最多一条
 TOPIC_METRICS_TRADES = "pm.metrics.trades"   # 成交类指标，按 token 每分钟一条
+TOPIC_METRICS_DEPTH = "pm.metrics.depth"     # 假深度识别，按市场每分钟一条
 TOPIC_EVENTS = "pm.events"                   # 检测出的事件（跳动），key 是 event_id
 
 GAMMA_URL = "https://gamma-api.polymarket.com"

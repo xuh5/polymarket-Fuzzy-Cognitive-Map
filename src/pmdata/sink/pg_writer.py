@@ -1,8 +1,9 @@
 """把实时指标写进 Postgres，给 Grafana 看板用。
 
-一个 consumer（group = pm-pg-sink）读四个 topic：
+一个 consumer（group = pm-pg-sink）读五个 topic：
 - pm.metrics.book   → 表 metrics_book（主键 asset_id + second）
 - pm.metrics.trades → 表 metrics_trades（主键 asset_id + minute）
+- pm.metrics.depth  → 表 depth_quality（主键 market_id + minute），网站 Depth quality 用
 - pm.raw.markets    → 表 tokens（asset_id → 市场问题、Yes/No），看板上显示市场名字用；
                       顺便按问题文字给市场打标签 → 表 market_labels（话题、公司，规则见 pmdata.topics.rules）
 - pm.events         → 表 signal_events（主键 event_id），网站 Signals 页用；永久保留
@@ -23,6 +24,7 @@ from datetime import UTC, datetime
 
 import psycopg
 from confluent_kafka import Consumer
+from psycopg.types.json import Jsonb
 
 from pmdata.common.config import (
     KAFKA_BOOTSTRAP,
@@ -30,6 +32,7 @@ from pmdata.common.config import (
     TOPIC_EVENTS,
     TOPIC_MARKETS,
     TOPIC_METRICS_BOOK,
+    TOPIC_METRICS_DEPTH,
     TOPIC_METRICS_TRADES,
 )
 from pmdata.common.log import setup_logging
@@ -50,6 +53,7 @@ BOOK_COLS = ["asset_id", "second", "market_id", "best_bid", "best_ask", "mid", "
              "exchange_ts", "received_at", "computed_at"]
 TRADE_COLS = ["asset_id", "minute", "market_id", "trades", "volume", "notional", "buy_volume", "sell_volume",
               "exchange_ts", "received_at", "computed_at"]
+DEPTH_COLS = ["market_id", "minute", "depth_usd", "suspicious_usd", "levels", "computed_at"]
 TOKEN_COLS = ["asset_id", "market_id", "question", "outcome", "outcome_index", "slug", "end_date"]
 LABEL_COLS = ["market_id", "topic", "company", "source"]
 # 跳动事件，字段含义见 pmdata.signals.detector
@@ -92,6 +96,19 @@ create table if not exists metrics_trades (
     primary key (asset_id, minute)
 );
 create index if not exists metrics_trades_minute on metrics_trades (minute);
+
+-- 假深度识别（规则见 pmdata.depth.tracker）：第一个选项的盘口，离最优价 5 分内
+create table if not exists depth_quality (
+    market_id text not null,
+    minute timestamptz not null,
+    depth_usd double precision not null,
+    suspicious_usd double precision not null,
+    levels jsonb not null,                   -- 可疑价位列表：side / price / usd / flashes / filled_usd
+    computed_at timestamptz,
+    inserted_at timestamptz not null default now(),
+    primary key (market_id, minute)
+);
+create index if not exists depth_quality_minute on depth_quality (minute);
 
 create table if not exists tokens (
     asset_id text primary key,
@@ -151,6 +168,11 @@ def trade_row(rec):
     return tuple(r.get(c) for c in TRADE_COLS)
 
 
+def depth_row(rec):
+    return (rec["market"], ms(rec["ts"]), rec["depth_usd"], rec["suspicious_usd"], Jsonb(rec["levels"]),
+            parse_time(rec["computed_at"]))
+
+
 def event_row(rec):
     r = dict(rec, market_id=rec["market"], start_at=ms(rec["start"]), peak_at=ms(rec["peak"]),
              last_at=ms(rec["last"]), book_since=ms(rec["book_since"]), computed_at=parse_time(rec["computed_at"]))
@@ -179,6 +201,7 @@ def upsert_sql(table, cols, keys, extra_set=""):
 UPSERTS = {
     "metrics_book": upsert_sql("metrics_book", BOOK_COLS, ["asset_id", "second"], ", inserted_at = now()"),
     "metrics_trades": upsert_sql("metrics_trades", TRADE_COLS, ["asset_id", "minute"], ", inserted_at = now()"),
+    "depth_quality": upsert_sql("depth_quality", DEPTH_COLS, ["market_id", "minute"], ", inserted_at = now()"),
     "tokens": upsert_sql("tokens", TOKEN_COLS, ["asset_id"], ", updated_at = now()"),
     # 只覆盖规则自己打的标签，别的来源（ai / manual）优先
     "market_labels": upsert_sql("market_labels", LABEL_COLS, ["market_id"], ", updated_at = now()")
@@ -207,6 +230,9 @@ def to_rows(msgs):
         elif topic == TOPIC_METRICS_TRADES:
             row = trade_row(rec)
             rows["metrics_trades"][row[:2]] = row
+        elif topic == TOPIC_METRICS_DEPTH:
+            row = depth_row(rec)
+            rows["depth_quality"][row[:2]] = row
         elif topic == TOPIC_EVENTS:
             row = event_row(rec)
             rows["signal_events"][row[0]] = row
@@ -240,7 +266,10 @@ def cleanup(conn):
         cur.execute(f"delete from metrics_book where second < now() - interval '{RETENTION_DAYS} days'")
         n_book = cur.rowcount
         cur.execute(f"delete from metrics_trades where minute < now() - interval '{RETENTION_DAYS} days'")
-        log.info("清理 %d 天前的数据：metrics_book %d 行，metrics_trades %d 行", RETENTION_DAYS, n_book, cur.rowcount)
+        n_trades = cur.rowcount
+        cur.execute(f"delete from depth_quality where minute < now() - interval '{RETENTION_DAYS} days'")
+        log.info("清理 %d 天前的数据：metrics_book %d 行，metrics_trades %d 行，depth_quality %d 行",
+                 RETENTION_DAYS, n_book, n_trades, cur.rowcount)
 
 
 def main():
@@ -270,7 +299,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_MARKETS, TOPIC_EVENTS])
+    consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_METRICS_DEPTH, TOPIC_MARKETS, TOPIC_EVENTS])
     log.info("开始（group=%s）", args.group_id)
     deadline = time.monotonic() + args.duration if args.duration else None
     last_cleanup = last_report = time.monotonic()

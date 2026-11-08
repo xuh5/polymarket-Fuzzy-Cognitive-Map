@@ -3,7 +3,16 @@ from datetime import UTC, datetime
 
 from pmdata.common.config import TOPIC_METRICS_BOOK
 from pmdata.signals.detector import JumpDetector
-from pmdata.sink.pg_writer import BOOK_COLS, EVENT_COLS, TOKEN_COLS, TRADE_COLS, UPSERTS, to_rows, upsert_sql
+from pmdata.sink.pg_writer import (
+    BOOK_COLS,
+    DEPTH_COLS,
+    EVENT_COLS,
+    TOKEN_COLS,
+    TRADE_COLS,
+    UPSERTS,
+    to_rows,
+    upsert_sql,
+)
 
 
 class FakeMsg:
@@ -50,6 +59,19 @@ def test_trade_rows():
     [row] = to_rows([FakeMsg("pm.metrics.trades", rec)])["metrics_trades"].values()
     row = dict(zip(TRADE_COLS, row, strict=True))
     assert row["minute"] == datetime.fromtimestamp(60, UTC) and row["buy_volume"] == 10.0
+
+
+def test_depth_rows_dedup_and_keep_levels():
+    rec = {"market": "0xM", "ts": 60000, "depth_usd": 100.0, "suspicious_usd": 49.0,
+           "levels": [{"side": "BUY", "price": 0.49, "usd": 49.0, "flashes": 5, "filled_usd": 0}],
+           "computed_at": "2026-10-22T09:00:01.000+00:00"}
+    rows = to_rows([FakeMsg("pm.metrics.depth", dict(rec, suspicious_usd=1.0)),
+                    FakeMsg("pm.metrics.depth", rec)])["depth_quality"]      # 上游重复输出同一分钟：后到的覆盖
+    assert len(rows) == 1
+    [row] = rows.values()
+    row = dict(zip(DEPTH_COLS, row, strict=True))
+    assert row["minute"] == datetime.fromtimestamp(60, UTC) and row["suspicious_usd"] == 49.0
+    assert row["levels"].obj == rec["levels"]
 
 
 def test_token_rows_from_markets_and_tombstone_skipped():

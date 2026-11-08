@@ -71,6 +71,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/archive/`：阶段 2 归档（archiver）。
 - `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续模块按同样方式在 `src/pmdata/` 下加子包。
 - `src/pmdata/topics/`：市场标签（rules.py，按问题文字分话题 + 公司）。
+- `src/pmdata/depth/`：模块 2 假深度识别（tracker.py 纯逻辑，run.py 运行程序）。
 - `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟；quality.py 乱序/盘口对不上）。
 - `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL、`status.py` Status 页面：读 health_* 表算总体状态/可用率/事故）。`src/pmdata/replay/`：模块 3 回放（`timeline.py` 纯逻辑，`bronze.py` 读 bronze）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
@@ -78,7 +79,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`signals`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）九个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`signals`、`depth`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）十个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -120,6 +121,7 @@ Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），
 | pm.raw.comments | 评论 id | 3 | compact，永久保留每条评论的最新版本 |
 | pm.metrics.book | 市场 id | 3 | 保留 7 天；盘口类指标，按 token 每秒最多一条 |
 | pm.metrics.trades | 市场 id | 3 | 保留 7 天；成交类指标，按 token 每分钟一条 |
+| pm.metrics.depth | 市场 id | 3 | 保留 7 天；假深度识别，按市场每分钟一条 |
 | pm.events | event_id（市场 ID:开始秒） | 3 | compact，永久保留；检测出的跳动，同一事件 open → closed → final 三版，只留最新 |
 
 create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 一律用 `latest_by_key()`（后读到的覆盖先读到的）。
@@ -273,7 +275,9 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 
 - 市场标签（2026-11-02，用户要求只上市场页、Signals 先不加）：Polymarket 自带标签（`include_tag=true`）太乱不用——每个市场 4～12 个、有平台内部标签、按事件打所以不准（百度的市场挂着 Anthropic）。改为 `src/pmdata/topics/rules.py` 按问题文字分：一个话题（10 类，归不进去是 Other）+ 问题里最先提到的公司。pg-sink 写表 market_labels（每个市场一行，source 记谁打的），启动时按现行规则把 tokens 里所有市场重打一遍。**给用户留位置**：以后用户用 AI 理解市场话题（Fuzzy Map 也要用），写同一张表、source 用 ai / manual，规则不覆盖它们。
 
-- **当前进度（2026-11-02）**：模块 1、5、3 完成，Signals（跳动）和市场标签上线，网站已公开（depthscope.app，见上面「部署」）。下一个：模块 2 假深度识别，开工前先用 bronze 探索「挂了又撤、几乎不成交」有多常见。用户待办：Cloudflare 账号开 2FA；换 tunnel 令牌（旧的贴进过聊天），改 .env 后 `up -d --no-deps cloudflared`。没定的：Signals 是否也显示话题标签、更多 signal 类型、推送（模块 4）。
+- 模块 2 判定规则（2026-11-08 用户同意，基于 11-05～07 bronze 探索）：价位过去 1 小时内出现 ≥5 次「≥$1000、离最优价 5 分内、成交 <5%、10 分钟内撤」的大单就标可疑，当前挂单金额计入可疑金额；市场可信度看可疑金额占 5 分内深度的比例。计划书的「没成交就撤」单独用区分不了（大单 86% 都符合），「靠近即撤」很少见（约 6%）。实现（用户同意）：Python（不用 Flink），单独的 depth 服务（group pm-depth，容器 depth，2026-11-08 12:44 UTC 起运行）→ pm.metrics.depth → pg-sink → 表 depth_quality（按市场每分钟一行，留 7 天）。
+
+- **当前进度（2026-11-08）**：模块 1、5、3 完成，Signals（跳动）和市场标签上线，网站已公开（depthscope.app，见上面「部署」）。模块 2 后端已上线，下一个：Depth quality 网页和接口。用户待办：Cloudflare 账号开 2FA；换 tunnel 令牌（旧的贴进过聊天），改 .env 后 `up -d --no-deps cloudflared`。没定的：Signals 是否也显示话题标签、更多 signal 类型、推送（模块 4）。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

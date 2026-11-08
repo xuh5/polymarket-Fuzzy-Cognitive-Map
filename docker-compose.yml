@@ -157,6 +157,19 @@ services:
     command: python -m pmdata.signals.run
     logging: *logging
 
+  # 假深度识别：读 pm.raw.clob，每分钟写 pm.metrics.depth
+  depth:
+    build: .
+    image: polymarket-app
+    container_name: depth
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+    command: python -m pmdata.depth.run
+    logging: *logging
+
   # 看板用的数据库。密码在 .env（不进 Git），compose 自动读取
   postgres:
     image: postgres:17.6
