@@ -107,8 +107,6 @@ export default function DepthQualityPanel({ marketId, outcome }: { marketId: str
   const flagged = latest.levels
   const flaggedAt = (side: 'bid' | 'ask', price: number) =>
     flagged.find((l) => l.price === price && l.side === (side === 'bid' ? 'BUY' : 'SELL'))?.flagged_usd ?? 0
-  // 深度图以中间价为中心，要让离最优价 5¢ 的价位都落在图里
-  const range = b?.bids[0] && b.asks[0] ? NEAR + (b.asks[0][0] - b.bids[0][0]) / 2 : NEAR
 
   return (
     <>
@@ -152,7 +150,7 @@ export default function DepthQualityPanel({ marketId, outcome }: { marketId: str
                 : 'Live book. Flags update every minute.'}
             </p>
             <div className="card chart-card">
-              <DepthChart bids={b.bids} asks={b.asks} range={range} flagged={flaggedAt} />
+              <DepthChart bids={b.bids} asks={b.asks} range={NEAR} flagged={flaggedAt} />
             </div>
           </>
         )}
@@ -164,7 +162,7 @@ export default function DepthQualityPanel({ marketId, outcome }: { marketId: str
         </div>
         <div className="card chart-card">
           <TimeSeriesChart rows={rows} series={SERIES} format={percent} timeLabel={clock} tipLabel={dayClock}
-            bucketMs={BUCKET_MS} label="Flagged share of depth over the past 24 hours" />
+            bucketMs={BUCKET_MS} minTop={10} label="Flagged share of depth over the past 24 hours" />
         </div>
       </section>
 

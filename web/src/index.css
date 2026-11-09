@@ -700,14 +700,17 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 .grid { stroke: var(--border); stroke-width: 1; }
 .axis { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
 .crosshair { stroke: var(--border-strong); stroke-width: 1; }
-.mid-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
-.series-label { font-size: 12px; font-weight: 600; }
-.series-label.bids { fill: var(--up); }
-.series-label.asks { fill: var(--down); }
-
-.depth { stroke-width: 2; stroke-linejoin: round; }
-.depth.bids { fill: var(--up-soft); stroke: var(--up); }
-.depth.asks { fill: var(--down-soft); stroke: var(--down); }
+.depth-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.depth-line.bids { stroke: var(--up); }
+.depth-line.asks { stroke: var(--down); }
+.depth-stop.bids { stop-color: var(--up); }
+.depth-stop.asks { stop-color: var(--down); }
+.depth-key.bids, .depth-dot.bids { fill: var(--up); }
+.depth-key.asks, .depth-dot.asks { fill: var(--down); }
+.depth-dot { stroke: var(--surface); stroke-width: 2; }
+.depth-title { font-size: 12px; font-weight: 500; fill: var(--ink-2); }
+.depth-total { font-weight: 650; fill: var(--ink); font-variant-numeric: tabular-nums; }
+.depth-spread { font-size: 14px; font-weight: 650; fill: var(--ink); font-variant-numeric: tabular-nums; }
 
 .tooltip {
   position: absolute;

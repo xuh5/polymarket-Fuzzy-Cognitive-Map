@@ -20,8 +20,9 @@ const LABEL_GAP = 14          // 末端名字之间至少隔这么多像素
 // 多条线 / 堆叠面积的时间序列图：一个纵轴（单位相同的才放一起），鼠标移上去显示这一刻每条的值。
 // 2 条以上有图例；不太窄时线末端直接写名字，颜色不是唯一的区分方式
 export default function TimeSeriesChart({
-  rows, series, format, axisFormat = format, timeLabel, tipLabel = timeLabel, label, robust = false, bucketMs,
+  rows, series, format, axisFormat = format, timeLabel, tipLabel = timeLabel, label, robust = false, bucketMs, minTop = 1e-9,
 }: {
+  minTop?: number    // 纵轴顶至少到这个值：数据全是 0 时不会画出一排一样的刻度
   rows: SeriesRow[]
   series: Series[]
   format: (v: number) => string          // 提示框里的值
@@ -80,7 +81,7 @@ export default function TimeSeriesChart({
   })
   const top = (i: number, s: Series) => (s.stack ? bands[i][s.key][1] : num(rows[i], s.key))
   const all = rows.flatMap((_, i) => series.map((s) => top(i, s) ?? 0))
-  let hi = Math.max(1e-9, ...all) * 1.08
+  let hi = Math.max(minTop, ...all) * 1.08
   if (robust) {
     const stackTop = Math.max(0, ...rows.map((_, i) => (stacked.length ? bands[i][stacked[stacked.length - 1].key][1] : 0)))
     const lines = rows.flatMap((_, i) => series.filter((s) => !s.stack).map((s) => top(i, s)))
