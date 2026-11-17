@@ -3,6 +3,7 @@ import { Route, Routes } from 'react-router'
 import { fetchHealth, type Health } from './api'
 import Footer from './components/Footer'
 import Header from './components/Header'
+import About from './pages/About'
 import MarketPage from './pages/MarketPage'
 import Markets from './pages/Markets'
 import Placeholder from './pages/Placeholder'
@@ -39,10 +40,7 @@ export default function App() {
               description="A fuzzy cognitive map of how markets and events push each other's odds up or down." />
           } />
           <Route path="/status" element={<Status />} />
-          <Route path="/about" element={
-            <Placeholder title="About"
-              description="How Depthscope works: from the exchange feed to your browser." />
-          } />
+          <Route path="/about" element={<About />} />
           <Route path="*" element={
             <Placeholder title="Page not found" description="This page doesn't exist." />
           } />
