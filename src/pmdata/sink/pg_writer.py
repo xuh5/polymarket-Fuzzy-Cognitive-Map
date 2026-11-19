@@ -4,6 +4,7 @@
 - pm.metrics.book   → 表 metrics_book（主键 asset_id + second）
 - pm.metrics.trades → 表 metrics_trades（主键 asset_id + minute）
 - pm.metrics.depth  → 表 depth_quality（主键 market_id + minute），网站 Depth quality 用
+- pm.metrics.execution → 表 execution_quality（主键 tx_hash + asset_id），每笔吃单的成交前盘口、成本和 markout
 - pm.raw.markets    → 表 tokens（asset_id → 市场问题、Yes/No），看板上显示市场名字用；
                       顺便按问题文字给市场打标签 → 表 market_labels（话题、公司，规则见 pmdata.topics.rules）
 - pm.events         → 表 signal_events（主键 event_id），网站 Signals 页用；永久保留
@@ -33,6 +34,7 @@ from pmdata.common.config import (
     TOPIC_MARKETS,
     TOPIC_METRICS_BOOK,
     TOPIC_METRICS_DEPTH,
+    TOPIC_METRICS_EXECUTION,
     TOPIC_METRICS_TRADES,
 )
 from pmdata.common.log import setup_logging
@@ -54,6 +56,11 @@ BOOK_COLS = ["asset_id", "second", "market_id", "best_bid", "best_ask", "mid", "
 TRADE_COLS = ["asset_id", "minute", "market_id", "trades", "volume", "notional", "buy_volume", "sell_volume",
               "exchange_ts", "received_at", "computed_at"]
 DEPTH_COLS = ["market_id", "minute", "depth_usd", "suspicious_usd", "levels", "computed_at"]
+# 成交质量，字段含义见 pmdata.execution.tracker
+EXEC_HORIZONS = [1, 10, 60, 300]
+EXEC_COLS = (["tx_hash", "asset_id", "market_id", "ts", "side", "fee_rate_bps", "price", "size", "notional", "levels",
+              "worst_price", "pre_bid", "pre_ask", "pre_mid", "pre_spread", "pre_match", "cost"]
+             + [f"mid_{h}s" for h in EXEC_HORIZONS] + [f"maker_pnl_{h}s" for h in EXEC_HORIZONS] + ["computed_at"])
 TOKEN_COLS = ["asset_id", "market_id", "question", "outcome", "outcome_index", "slug", "end_date"]
 LABEL_COLS = ["market_id", "topic", "company", "source"]
 # 跳动事件，字段含义见 pmdata.signals.detector
@@ -149,6 +156,35 @@ create table if not exists signal_events (
     updated_at timestamptz not null default now()
 );
 create index if not exists signal_events_peak on signal_events (peak_at);
+
+-- 成交质量（规则见 pmdata.execution.tracker）：每笔吃单一条，成交 5 分钟后写入
+create table if not exists execution_quality (
+    tx_hash text not null,
+    asset_id text not null,
+    market_id text not null,
+    ts timestamptz not null,                 -- 成交消息的交易所时间
+    side text not null,                      -- 吃单方向
+    fee_rate_bps integer,
+    price double precision not null,         -- 吃单均价（交易所四舍五入到 0.001）
+    size double precision not null,
+    notional double precision not null,
+    levels integer,                          -- 吃了几档；null = 没认出来
+    worst_price double precision,
+    pre_bid double precision,
+    pre_ask double precision,
+    pre_mid double precision,
+    pre_spread double precision,
+    pre_match text not null,                 -- exact / sweep / none
+    cost double precision,                   -- 吃单方比成交前中间价多付多少（每股）
+    mid_1s double precision, mid_10s double precision, mid_60s double precision, mid_300s double precision,
+    maker_pnl_1s double precision, maker_pnl_10s double precision,     -- 挂单方按之后的中间价算，每股赚多少
+    maker_pnl_60s double precision, maker_pnl_300s double precision,
+    computed_at timestamptz,
+    inserted_at timestamptz not null default now(),
+    primary key (tx_hash, asset_id)
+);
+create index if not exists execution_quality_market_ts on execution_quality (market_id, ts);
+create index if not exists execution_quality_ts on execution_quality (ts);
 """
 
 
@@ -171,6 +207,11 @@ def trade_row(rec):
 def depth_row(rec):
     return (rec["market"], ms(rec["ts"]), rec["depth_usd"], rec["suspicious_usd"], Jsonb(rec["levels"]),
             parse_time(rec["computed_at"]))
+
+
+def exec_row(rec):
+    r = dict(rec, market_id=rec["market"], ts=ms(rec["ts"]), computed_at=parse_time(rec["computed_at"]))
+    return tuple(r.get(c) for c in EXEC_COLS)
 
 
 def event_row(rec):
@@ -202,6 +243,7 @@ UPSERTS = {
     "metrics_book": upsert_sql("metrics_book", BOOK_COLS, ["asset_id", "second"], ", inserted_at = now()"),
     "metrics_trades": upsert_sql("metrics_trades", TRADE_COLS, ["asset_id", "minute"], ", inserted_at = now()"),
     "depth_quality": upsert_sql("depth_quality", DEPTH_COLS, ["market_id", "minute"], ", inserted_at = now()"),
+    "execution_quality": upsert_sql("execution_quality", EXEC_COLS, ["tx_hash", "asset_id"], ", inserted_at = now()"),
     "tokens": upsert_sql("tokens", TOKEN_COLS, ["asset_id"], ", updated_at = now()"),
     # 只覆盖规则自己打的标签，别的来源（ai / manual）优先
     "market_labels": upsert_sql("market_labels", LABEL_COLS, ["market_id"], ", updated_at = now()")
@@ -233,6 +275,12 @@ def to_rows(msgs):
         elif topic == TOPIC_METRICS_DEPTH:
             row = depth_row(rec)
             rows["depth_quality"][row[:2]] = row
+        elif topic == TOPIC_METRICS_EXECUTION:
+            if not rec.get("tx_hash"):     # 交易所一直都带交易哈希；万一没有就没法做主键，跳过
+                log.warning("成交质量记录没有交易哈希，跳过：%s %s", rec.get("market"), rec.get("ts"))
+                continue
+            row = exec_row(rec)
+            rows["execution_quality"][row[:2]] = row
         elif topic == TOPIC_EVENTS:
             row = event_row(rec)
             rows["signal_events"][row[0]] = row
@@ -268,8 +316,10 @@ def cleanup(conn):
         cur.execute(f"delete from metrics_trades where minute < now() - interval '{RETENTION_DAYS} days'")
         n_trades = cur.rowcount
         cur.execute(f"delete from depth_quality where minute < now() - interval '{RETENTION_DAYS} days'")
-        log.info("清理 %d 天前的数据：metrics_book %d 行，metrics_trades %d 行，depth_quality %d 行",
-                 RETENTION_DAYS, n_book, n_trades, cur.rowcount)
+        n_depth = cur.rowcount
+        cur.execute(f"delete from execution_quality where ts < now() - interval '{RETENTION_DAYS} days'")
+        log.info("清理 %d 天前的数据：metrics_book %d 行，metrics_trades %d 行，depth_quality %d 行，"
+                 "execution_quality %d 行", RETENTION_DAYS, n_book, n_trades, n_depth, cur.rowcount)
 
 
 def main():
@@ -299,7 +349,8 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
 
-    consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_METRICS_DEPTH, TOPIC_MARKETS, TOPIC_EVENTS])
+    consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_METRICS_DEPTH, TOPIC_METRICS_EXECUTION,
+                        TOPIC_MARKETS, TOPIC_EVENTS])
     log.info("开始（group=%s）", args.group_id)
     deadline = time.monotonic() + args.duration if args.duration else None
     last_cleanup = last_report = time.monotonic()

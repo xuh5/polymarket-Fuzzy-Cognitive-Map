@@ -151,3 +151,22 @@ def list_signals(conn, hours):
         """,
         (hours,),
     ).fetchall()
+
+
+def executions(conn, market_id, hours):
+    """某个市场过去 hours 小时的每笔吃单（成交质量，规则见 pmdata.execution.tracker），最新的在前。
+
+    一个市场一天几十到几百笔，全部给前端，汇总和曲线在网页上算。成交 5 分钟后才写进表（等 markout）。
+    """
+    return conn.execute(
+        """
+        select e.tx_hash, e.ts, t.outcome, t.outcome_index, e.side, e.price, e.size, e.notional,
+               e.levels, e.worst_price, e.pre_bid, e.pre_ask, e.pre_mid, e.pre_spread, e.pre_match, e.cost,
+               e.maker_pnl_1s, e.maker_pnl_10s, e.maker_pnl_60s, e.maker_pnl_300s
+        from execution_quality e join tokens t using (asset_id)
+        where e.market_id = %s and e.ts > now() - make_interval(hours => %s)
+        order by e.ts desc
+        limit 5000
+        """,
+        (market_id, hours),
+    ).fetchall()

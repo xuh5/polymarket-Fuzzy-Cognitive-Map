@@ -167,6 +167,13 @@ def depth_quality(conn: Conn, market_id: str, hours: Annotated[int, Query(ge=1, 
     return queries.depth_quality(conn, market_id, hours)
 
 
+@app.get("/api/markets/{market_id}/executions")
+def executions(conn: Conn, market_id: str, hours: Annotated[int, Query(ge=1, le=168)] = 24):
+    """成交质量：每笔吃单的成交前盘口、吃单成本和挂单方事后赚亏（markout）。"""
+    tokens_or_404(conn, market_id)
+    return queries.executions(conn, market_id, hours)
+
+
 @app.get("/api/signals")
 def signals(conn: Conn, hours: Annotated[int, Query(ge=1, le=720)] = 168):
     """过去 hours 小时的价格跳动（候选门槛 3 个点，网页自己筛）。字段含义见 pmdata.signals.detector。"""

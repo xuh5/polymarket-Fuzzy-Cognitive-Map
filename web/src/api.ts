@@ -258,3 +258,30 @@ export interface Signal {
 }
 
 export const fetchSignals = (hours: number) => getJson<Signal[]>(`/api/signals?hours=${hours}`)
+
+// ---------- 成交质量（pmdata/execution/tracker.py；价格 0～1，每股；时间是 ISO 字符串） ----------
+export interface Execution {
+  tx_hash: string
+  ts: string
+  outcome: string
+  outcome_index: number
+  side: 'BUY' | 'SELL'          // 吃单方向
+  price: number                 // 吃单均价
+  size: number
+  notional: number
+  levels: number | null         // 吃了几档；null = 没认出来
+  worst_price: number | null
+  pre_bid: number | null        // 成交前的买一、卖一、中间价、价差
+  pre_ask: number | null
+  pre_mid: number | null
+  pre_spread: number | null
+  pre_match: 'exact' | 'sweep' | 'none'
+  cost: number | null           // 吃单方比成交前中间价多付多少；正数 = 成本
+  maker_pnl_1s: number | null   // 挂单方按 1 秒 / 10 秒 / 1 分钟 / 5 分钟后的中间价算赚多少；正数 = 赚
+  maker_pnl_10s: number | null
+  maker_pnl_60s: number | null
+  maker_pnl_300s: number | null
+}
+
+export const fetchExecutions = (marketId: string, hours: number) =>
+  getJson<Execution[]>(`/api/markets/${marketId}/executions?hours=${hours}`)

@@ -7,6 +7,7 @@ from pmdata.sink.pg_writer import (
     BOOK_COLS,
     DEPTH_COLS,
     EVENT_COLS,
+    EXEC_COLS,
     TOKEN_COLS,
     TRADE_COLS,
     UPSERTS,
@@ -72,6 +73,22 @@ def test_depth_rows_dedup_and_keep_levels():
     row = dict(zip(DEPTH_COLS, row, strict=True))
     assert row["minute"] == datetime.fromtimestamp(60, UTC) and row["suspicious_usd"] == 49.0
     assert row["levels"].obj == rec["levels"]
+
+
+def test_execution_rows_dedup_and_skip_missing_hash():
+    rec = {"market": "0xM", "asset_id": "Y", "tx_hash": "0xT", "ts": 60000, "side": "BUY", "fee_rate_bps": 0,
+           "price": 0.52, "size": 40.0, "notional": 20.8, "levels": 1, "worst_price": 0.52,
+           "pre_bid": 0.5, "pre_ask": 0.52, "pre_mid": 0.51, "pre_spread": 0.02, "pre_match": "exact", "cost": 0.01,
+           "mid_1s": 0.515, "mid_10s": 0.515, "mid_60s": 0.52, "mid_300s": None,
+           "maker_pnl_1s": 0.005, "maker_pnl_10s": 0.005, "maker_pnl_60s": 0.0, "maker_pnl_300s": None,
+           "computed_at": "2026-10-22T09:05:01.000+00:00"}
+    rows = to_rows([FakeMsg("pm.metrics.execution", dict(rec, cost=9.0)),
+                    FakeMsg("pm.metrics.execution", rec),                  # 重启后重复输出：后到的覆盖
+                    FakeMsg("pm.metrics.execution", dict(rec, tx_hash=None))])["execution_quality"]
+    assert list(rows) == [("0xT", "Y")]
+    row = dict(zip(EXEC_COLS, rows[("0xT", "Y")], strict=True))
+    assert row["market_id"] == "0xM" and row["ts"] == datetime.fromtimestamp(60, UTC)
+    assert row["cost"] == 0.01 and row["maker_pnl_300s"] is None
 
 
 def test_token_rows_from_markets_and_tombstone_skipped():

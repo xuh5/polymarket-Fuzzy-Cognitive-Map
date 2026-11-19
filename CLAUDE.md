@@ -72,6 +72,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/query/`：查询工具（market_24h：按 slug/conditionId/Gamma ID 精确匹配，否则按问题文本模糊搜索；只读打开 warehouse.duckdb，按 exchange_ts 筛选）。测试用内存 DuckDB 建迷你 gold/silver 表。后续模块按同样方式在 `src/pmdata/` 下加子包。
 - `src/pmdata/topics/`：市场标签（rules.py，按问题文字分话题 + 公司）。
 - `src/pmdata/depth/`：模块 2 假深度识别（tracker.py 纯逻辑，run.py 运行程序）。
+- `src/pmdata/execution/`：成交质量（tracker.py 纯逻辑，run.py 运行程序，结构同 depth）。
 - `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟；quality.py 乱序/盘口对不上）。
 - `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL、`status.py` Status 页面：读 health_* 表算总体状态/可用率/事故）。`src/pmdata/replay/`：模块 3 回放（`timeline.py` 纯逻辑，`bronze.py` 读 bronze）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
@@ -79,7 +80,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 
 ## Docker
 
-采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`signals`、`depth`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）十个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
+采集和归档程序正式运行在 Docker 里（Dockerfile 打包成 `polymarket-app` 镜像，`PYTHONPATH=/app/src`，compose 里的 `fetch-markets`、`collect-clob`、`collect-comments`、`archiver`、`metrics`、`signals`、`depth`、`execution`、`pg-sink`、`health`、`api`（网站后端，127.0.0.1:8000）十一个服务共用它，用 `python -m pmdata.xxx` 启动，`restart: unless-stopped`）。archiver 把 `./data` 挂到 `/app/data`（api 只读挂载，回放用），`stop_grace_period: 60s` 让它停止前写完手里的数据：
 
 ```bash
 docker compose ps                          # 看各容器状态
@@ -122,6 +123,7 @@ Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），
 | pm.metrics.book | 市场 id | 3 | 保留 7 天；盘口类指标，按 token 每秒最多一条 |
 | pm.metrics.trades | 市场 id | 3 | 保留 7 天；成交类指标，按 token 每分钟一条 |
 | pm.metrics.depth | 市场 id | 3 | 保留 7 天；假深度识别，按市场每分钟一条 |
+| pm.metrics.execution | 市场 id | 3 | 保留 7 天；成交质量，每笔吃单一条（成交 5 分钟后） |
 | pm.events | event_id（市场 ID:开始秒） | 3 | compact，永久保留；检测出的跳动，同一事件 open → closed → final 三版，只留最新 |
 
 create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 一律用 `latest_by_key()`（后读到的覆盖先读到的）。
@@ -258,7 +260,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 价格图用 Lightweight Charts（用户 2026-10-29 选，其他图仍是手写 SVG）：横轴按点的序号等距排、不按时间，所以缺的时间格要用上一格的值补齐。下栏成交量来自 `/api/markets/{id}/trades`，看涨往上、看跌往下（用户看过，保持不改成股票那种单向柱）。
   - 部署（用户 2026-10-28 定）：后端 FastAPI 跑在台式机 Docker 里，用 Cloudflare Tunnel 对外；前端 React 放 Cloudflare Pages。
     2026-11-02 上线：域名 depthscope.app（在用户的 Cloudflare 账号里）。后端 `api.depthscope.app` → cloudflared 容器（令牌在 .env 的 CLOUDFLARE_TUNNEL_TOKEN）→ `http://api:8000`；CORS 只放 depthscope.app / www；限流在 Cloudflare 规则里（URI Path 以 /api/ 开头，每 IP 10 秒 100 次）。前端改用 Workers 静态资源（`web/wrangler.jsonc`，Pages 已是旧流程），push 到 master 自动构建，构建变量 VITE_API_BASE。用户决定不建只读数据库用户。
-  - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Depth quality 三个 tab。
+  - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Trades / Depth quality 四个 tab。
 
 - 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。吞吐量不另写程序：视图 health_throughput 用相邻两次 offset 相减（processed = 已提交涨了多少，written = 末尾涨了多少）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。断线重连：health 用 group pm-health 读 pm.raw.clob 的缺口标记，按 conn_id 一次重连一行写表 health_reconnects（永久保留；「加入订阅名单」不算）。延迟：每分钟从 metrics_book 汇总四段（交易所→收到、收到→算完、算完→入库、端到端）的 p50/p99 写表 health_latency（按 inserted_at 归分钟，永久保留，启动时补算现存 7 天）。行情质量：health 自己维护一份订单簿（启动预热 24 小时，复用 metrics 的 plan_start），每分钟写表 health_stream_quality——乱序（同市场 price_change 交易所时间倒退，交易所本身一天约 180 次、多为 1～7ms；只比 price_change 之间，和 best_bid_ask 比全是假乱序）、盘口对不上（本地买一卖一 vs 交易所带的，代表漏消息）、盘口不可用时忽略的变化。health 的 Postgres 连接用 autocommit（2026-10-29 踩坑：单独一句查询隐式开事务没提交，之后的写入全变成 savepoint 没落库，还锁住了表）。
 - 2026-10-29 补回的重连记录发现：10-26 断网后 SSL 证书校验失败断断续续持续到 10-27 16:21（18 次，每次 16～125 秒）；10-29 08:46 台式机重启后 Docker 到 11:42 才起来，停了约 3 小时（Grafana 也没起来，所以没告警）。
@@ -278,6 +280,10 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - 模块 2 判定规则（2026-11-08 用户同意，基于 11-05～07 bronze 探索）：价位过去 1 小时内出现 ≥5 次「≥$1000、离最优价 5 分内、成交 <5%、10 分钟内撤」的大单就标可疑，只有这一档挂了不到 10 分钟的部分计入可疑金额（2026-11-08 用户同意；整档算会把六成久挂的钱也算进去）；「有成交后 1 秒内被撤掉一半以上」只作附加说明，单独不算可疑（平时 0.55%、成交后 7.2%，但反复出现的很少）；市场可信度看可疑金额占 5 分内深度的比例。计划书的「没成交就撤」单独用区分不了（大单 86% 都符合），「靠近即撤」很少见（约 6%）。实现（用户同意）：Python（不用 Flink），单独的 depth 服务（group pm-depth，容器 depth，2026-11-08 12:44 UTC 起运行）→ pm.metrics.depth → pg-sink → 表 depth_quality（按市场每分钟一行，留 7 天）。
 
 - **当前进度（2026-11-08）**：模块 1、5、3 完成，Signals（跳动）和市场标签上线，网站已公开（depthscope.app，见上面「部署」）。模块 2 后端已上线，市场详情页 Depth quality 标签已做（接口 `/api/markets/{id}/depth-quality`；实时订单簿 + 深度图，可疑价位标色）。实时 vs 回放对账 2026-11-09 通过（11-08 17:20～11-09 17:00 UTC，从线上预热起点重放 600 万条，42620 个市场分钟的深度、可疑金额、价位明细全部一致；线上多 53 分钟，都是冷门市场退订或断线前靠时钟推进输出的，可疑金额都是 0）。模块 2 完成；首页榜单用户 2026-11-09 决定不做（没意义）。About 页 2026-11-17 上线（静态内容：功能、选市场规则、管道、对账数字、数据局限；不放个人信息）。用户待办：Cloudflare 账号开 2FA；换 tunnel 令牌（旧的贴进过聊天），改 .env 后 `up -d --no-deps cloudflared`。没定的：Signals 是否也显示话题标签、更多 signal 类型、推送（模块 4）。
+
+- 成交质量（2026-11-19 上线）：每笔吃单算成交前盘口、吃了几档、比中间价多付多少、挂单方 1s/10s/1m/5m 后按中间价估值的赚亏（markout）。服务 execution（group pm-execution）→ pm.metrics.execution → pg-sink → 表 execution_quality（主键 tx_hash+asset_id，留 7 天）→ 市场页 Trades 标签（接口 `/api/markets/{id}/executions`）。
+  WS 一笔吃单只推一条成交（总量 + 均价，均价四舍五入到 0.001），盘口减少比成交消息早约 21ms，所以「成交前盘口」取对应那次盘口减少之前的；扫多档 = 同一交易所时间戳挂单侧几档一起减少。按钱包区分挂单方/吃单方（Data API maker 行）用户 2026-11-19 决定不做。
+  对账 2026-11-19 通过：05:56～07:58 UTC 从线上预热起点重放 bronze，1006 笔逐字段全部一致。数据源：Polymarket US（接口另一套、行情要 key、不上链）和 Kalshi（WebSocket 要美国 KYC 账户的 key）都不换。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

@@ -9,6 +9,7 @@ import Labels from '../components/Labels'
 import PriceChart from '../components/PriceChart'
 import ReplayPanel from '../components/ReplayPanel'
 import SlippageCalc from '../components/SlippageCalc'
+import TradesPanel from '../components/TradesPanel'
 import { ago, cents, endDate, pct, pointsChange, usd } from '../format'
 import { LENGTHS, minuteFloor, windowAtEnd } from '../replay'
 import { usePolling } from '../usePolling'
@@ -20,7 +21,7 @@ const RANGES = [
   { label: '24H', minutes: 1440, bucket: 300 },
 ]
 const DEPTH_RANGES = [0.05, 0.1, 0.25]
-const TABS = ['Overview', 'Replay', 'Depth quality'] as const
+const TABS = ['Overview', 'Replay', 'Trades', 'Depth quality'] as const
 
 function Segmented<T extends string | number>({ options, value, onChange, label, render }: {
   options: readonly T[]; value: T; onChange: (v: T) => void; label: string; render?: (v: T) => string
@@ -155,6 +156,8 @@ export default function MarketPage() {
           initialStart={replayStart} initialLength={replayLength} initialAt={replayAt ?? (Number(params.get('at')) || null)}
           onWindowChange={setReplayWindow} />
       )}
+      {tab === 'Trades' && <TradesPanel marketId={marketId} outcome={first.outcome}
+        other={m.outcomes.find((o) => o.outcome_index === 2)?.outcome ?? 'the other side'} onReplay={(t) => replayFrom(t / 1000)} />}
       {tab === 'Depth quality' && <DepthQualityPanel marketId={marketId} outcome={first.outcome} />}
 
       {tab === 'Overview' && (

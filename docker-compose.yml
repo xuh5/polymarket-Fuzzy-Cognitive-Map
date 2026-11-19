@@ -170,6 +170,19 @@ services:
     command: python -m pmdata.depth.run
     logging: *logging
 
+  # 成交质量：读 pm.raw.clob，每笔吃单 5 分钟后写 pm.metrics.execution
+  execution:
+    build: .
+    image: polymarket-app
+    container_name: execution
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+    command: python -m pmdata.execution.run
+    logging: *logging
+
   # 看板用的数据库。密码在 .env（不进 Git），compose 自动读取
   postgres:
     image: postgres:17.6

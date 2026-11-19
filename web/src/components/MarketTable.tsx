@@ -6,6 +6,7 @@ import BookPreview, { PREVIEW_WIDTH } from './BookPreview'
 import Change from './Change'
 import Flash from './Flash'
 import Labels from './Labels'
+import Pager from './Pager'
 
 type SortKey = 'moves' | 'prob' | 'name'
 const SORTS: { key: SortKey; label: string }[] = [
@@ -25,13 +26,6 @@ const CLOSE_GRACE_MS = 150
 const PREVIEW_HALF_HEIGHT = 170   // 卡片大约一半高，用来让它不超出窗口上下边
 
 type Row = { m: Market; stale: boolean; pts: number | null }
-
-// 页码按钮：页数少就全列出来，多了只留首尾和当前页附近，中间用 … 省略
-function pageList(page: number, pages: number): (number | '…')[] {
-  if (pages <= 7) return Array.from({ length: pages }, (_, i) => i + 1)
-  const near = [page - 1, page, page + 1].filter((p) => p > 1 && p < pages)
-  return [1, ...(near[0] > 2 ? ['…' as const] : []), ...near, ...(near.at(-1)! < pages - 1 ? ['…' as const] : []), pages]
-}
 
 export default function MarketTable({ markets }: { markets: Market[] }) {
   const [query, setQuery] = useState('')
@@ -212,27 +206,8 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
       )}
 
       {rows.length > 0 && (
-        <div className="pager">
-          <span className="muted">
-            {(current - 1) * pageSize + 1}–{Math.min(current * pageSize, rows.length)} of {rows.length}
-          </span>
-          <label className="page-size">
-            Rows per page
-            <select value={pageSize} onChange={(e) => reset(setPageSize)(Number(e.target.value))}>
-              {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </label>
-          <nav className="pages" aria-label="Pages">
-            <button disabled={current === 1} onClick={() => setPage(current - 1)} aria-label="Previous page">‹</button>
-            {pageList(current, pages).map((p, i) =>
-              p === '…'
-                ? <span key={`gap${i}`} className="muted">…</span>
-                : <button key={p} className={p === current ? 'active' : ''} aria-current={p === current ? 'page' : undefined}
-                    onClick={() => setPage(p)}>{p}</button>,
-            )}
-            <button disabled={current === pages} onClick={() => setPage(current + 1)} aria-label="Next page">›</button>
-          </nav>
-        </div>
+        <Pager page={current} pageSize={pageSize} total={rows.length} sizes={PAGE_SIZES}
+          onPage={setPage} onPageSize={reset(setPageSize)} />
       )}
     </section>
   )
