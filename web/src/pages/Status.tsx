@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { fetchStatus, fetchStatusCharts, type StatusRange, type StatusSummary } from '../api'
+import ArchitectureDiagram from '../components/ArchitectureDiagram'
 import PipelineDiagram from '../components/PipelineDiagram'
 import { SkeletonBlock } from '../components/Skeleton'
 import TimeSeriesChart, { type Series } from '../components/TimeSeriesChart'
@@ -180,6 +181,11 @@ export default function Status() {
           </div>
         </section>
       )}
+
+      <section>
+        <div className="section-head"><h2>How it's built</h2></div>
+        <ArchitectureDiagram />
+      </section>
     </>
   )
 }

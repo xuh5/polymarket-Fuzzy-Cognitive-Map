@@ -1461,18 +1461,11 @@ td .sub, .market-head .sub { flex-wrap: wrap; }
 .about-feature.link:hover { border-color: var(--border-strong); }
 .about-feature.link h3 span { color: var(--muted); }
 .about-text { padding: 20px; max-width: 760px; font-size: 15px; line-height: 1.6; color: var(--ink-2); }
-.pipeline + .about-text { margin-top: 16px; }
 .about-text p { margin: 0 0 12px; }
 .about-text p:last-child { margin-bottom: 0; }
-.about-text ul { margin: 0; padding-left: 20px; }
-.about-text li { margin-bottom: 10px; }
-.about-text li:last-child { margin-bottom: 0; }
 .about-text b { color: var(--ink); font-weight: 600; }
 .about-text a { color: var(--accent); }
 .about-text a:hover { text-decoration: underline; }
-.about-pipe .pipe-name, .about-pipe .pipe-sub { white-space: normal; }
-.about-pipe .pipe-step { align-items: stretch; }
-@media (min-width: 861px) { .about-pipe .pipe-hop { align-self: center; } }
 
 /* ---------- Trades 标签（成交质量） ---------- */
 .grid.zero { stroke: var(--border-strong); stroke-width: 1.5; }
@@ -1540,3 +1533,31 @@ td .sub, .market-head .sub { flex-wrap: wrap; }
   .pb-row { grid-template-columns: 1fr auto; }
   .pb-track { grid-column: 1 / -1; grid-row: 2; }
 }
+
+/* ---------- Status 页：完整架构图 ---------- */
+.arch-card { padding: 16px; }
+.arch-scroll { overflow-x: auto; }
+.arch { display: block; width: 100%; min-width: 940px; height: auto; }
+.arch-col { font-size: 11px; font-weight: 600; fill: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.arch-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; transition: opacity 0.15s, stroke 0.15s; }
+.arch-edge.dashed { stroke-dasharray: 4 4; }
+.arch-edge.on { stroke: var(--accent); stroke-width: 2; }
+.arch-edge.dim { opacity: 0.25; }
+.arch-arrowhead { fill: var(--border-strong); }
+.arch-node { cursor: default; transition: opacity 0.15s; }
+.arch-node.dim { opacity: 0.35; }
+.arch-node rect { stroke-width: 1.2; }
+.arch-node.service rect { fill: var(--surface); stroke: var(--border-strong); }
+.arch-node.topic rect { fill: var(--accent-soft); stroke: var(--accent); }
+.arch-node.store rect { fill: #eef6f1; stroke: var(--up); }
+.arch-node.external rect { fill: var(--bg); stroke: var(--border-strong); stroke-dasharray: 4 3; }
+.arch-label { font-size: 12.5px; font-weight: 600; fill: var(--ink); }
+.arch-node.topic .arch-label { font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 11.5px; }
+.arch-sub { font-size: 10.5px; fill: var(--muted); }
+.arch-legend { margin: 0 0 12px; }
+.arch-key { display: inline-block; width: 14px; height: 10px; border-radius: 3px; margin-right: 6px; border: 1.2px solid; }
+.arch-key.service { background: var(--surface); border-color: var(--border-strong); }
+.arch-key.topic { background: var(--accent-soft); border-color: var(--accent); }
+.arch-key.store { background: #eef6f1; border-color: var(--up); }
+.arch-key.external { background: var(--bg); border: 1.2px dashed var(--border-strong); }
+.arch-key-line { display: inline-block; width: 18px; margin-right: 6px; border-top: 1.5px dashed var(--border-strong); vertical-align: 3px; }

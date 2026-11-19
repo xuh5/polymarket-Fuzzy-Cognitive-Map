@@ -6,7 +6,7 @@ The goal is a public order book analytics site built on this pipeline: flag susp
 
 Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 
-> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is live at [depthscope.app](https://depthscope.app) with market pages (depth chart, slippage calculator, tick-by-tick replay, trade quality, depth quality), a Signals page of detected price moves, a status page, and an About page explaining the data and its limits. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
+> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is live at [depthscope.app](https://depthscope.app) with market pages (depth chart, slippage calculator, tick-by-tick replay, trade quality, depth quality), a Signals page of detected price moves, a status page with live pipeline health and a full architecture diagram, and a short About page. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
 
 ## Architecture
 
