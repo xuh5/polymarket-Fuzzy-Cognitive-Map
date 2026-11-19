@@ -113,7 +113,7 @@ Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），
 - 危险命令（docker compose down -v 等会删数据的操作）执行前必须先问用户。
 
 ## Topics（scripts/create_topics.py 管理，幂等，可重复运行）
-新增 topic 也加在这个脚本里。
+新增 topic 也加在这个脚本里。新增/删除服务或 topic 时，同步改 Status 页架构图 `web/src/components/ArchitectureDiagram.tsx`（手工排的坐标，不会自动更新）。
 
 | topic | key | 分区 | 策略 |
 |---|---|---|---|
