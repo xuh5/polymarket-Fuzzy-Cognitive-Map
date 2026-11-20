@@ -19,11 +19,20 @@ def list_markets(conn, hours):
     topic / company 是市场标签（表 market_labels，规则或以后别的打法写的），可能为空。
     tokens 表里有几千个 token，但只有订阅的那几十个有指标：对每个 token 用主键索引（asset_id, second）
     取最新一条，比扫一遍 metrics_book 再去重快得多。
+    twins：市场页 Related 标签会显示几个孪生（口径和 twins() 一样：关系还在用、两边最近 30 分钟都有盘口）。
     """
     return conn.execute(
         """
         select t.market_id, t.question, t.slug, t.outcome, t.end_date, t.asset_id, l.topic, l.company,
-               b.mid, b.best_bid, b.best_ask, b.spread, b.logodds_chg_60m, b.second as updated_at
+               b.mid, b.best_bid, b.best_ask, b.spread, b.logodds_chg_60m, b.second as updated_at,
+               case when b.second <= now() - interval '30 minutes' then 0 else (
+                   select count(*) from market_relations r
+                   join tokens o on o.outcome_index = 1
+                    and o.market_id = case when r.market_a = t.market_id then r.market_b else r.market_a end
+                   where r.retired_at is null and (r.market_a = t.market_id or r.market_b = t.market_id)
+                     and exists (select 1 from metrics_book b2 where b2.asset_id = o.asset_id
+                                 and b2.second > now() - interval '30 minutes')
+               ) end as twins
         from tokens t
         left join market_labels l using (market_id)
         join lateral (
@@ -169,4 +178,30 @@ def executions(conn, market_id, hours):
         limit 5000
         """,
         (market_id, hours),
+    ).fetchall()
+
+
+def twins(conn, market_id=None):
+    """和这个市场有严格逻辑关系的别的事件里的市场（表 market_relations，pmdata.twins.run 写的）。
+    market_id 为 None 时返回所有市场的（市场列表算每个市场的最大缺口用）。
+
+    只要还在用的（retired_at 为空：没关闭、最近一次判断还成立）、两边都在订阅中（最近 30 分钟有盘口指标）的。
+    每行是表里的原样：market_a / market_b 的方向，网站后端再换成从当前市场的角度。
+    """
+    return conn.execute(
+        """
+        select r.market_a, r.market_b, r.relation, r.strength, r.condition, r.differences, r.confidence,
+               r.reason, r.source, r.model, r.judged_at,
+               ta.asset_id as asset_a, ta.question as question_a, ta.slug as slug_a,
+               tb.asset_id as asset_b, tb.question as question_b, tb.slug as slug_b
+        from market_relations r
+        join tokens ta on ta.market_id = r.market_a and ta.outcome_index = 1
+        join tokens tb on tb.market_id = r.market_b and tb.outcome_index = 1
+        where r.retired_at is null and (%(m)s::text is null or r.market_a = %(m)s or r.market_b = %(m)s)
+          and exists (select 1 from metrics_book b where b.asset_id = ta.asset_id
+                      and b.second > now() - interval '30 minutes')
+          and exists (select 1 from metrics_book b where b.asset_id = tb.asset_id
+                      and b.second > now() - interval '30 minutes')
+        """,
+        {"m": market_id},
     ).fetchall()

@@ -20,6 +20,7 @@
   /* 状态色：只用来表示状态，旁边总是配文字或图标 */
   --good: #0ca30c;
   --warn: #fab219;
+  --warn-ink: #7a5200;
   --crit: #d03b3b;
   --nodata: #e6e5e0;
   --radius: 12px;
@@ -49,6 +50,8 @@ a { color: inherit; text-decoration: none; }
 }
 
 .muted { color: var(--muted); }
+/* 市场短编号等：等宽字体，好认、好抄 */
+.mono { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-size: 0.92em; }
 
 /* ---------- 顶栏 ---------- */
 .site-header {
@@ -654,6 +657,63 @@ td a.q:hover { text-decoration: underline; text-underline-offset: 2px; }
 
 .tabs button:hover { color: var(--ink); }
 .tabs button.active { color: var(--ink); border-bottom-color: var(--ink); }
+.tabs button:disabled { color: var(--muted); cursor: default; }
+.tab-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.tabs button:disabled .tab-count { background: var(--nodata); color: var(--muted); }
+
+/* ---------- Related：孪生市场 ---------- */
+.twins-intro { margin: 0 0 12px; color: var(--ink-2); }
+.twins-table { min-width: 760px; }
+.twins-table td { vertical-align: top; font-size: 14px; }
+.twins-table td:nth-child(2) { width: 170px; }
+.twins-table .chip { display: inline-block; line-height: 1.45; border-radius: 6px; }
+.twins-table td:nth-child(4) { white-space: nowrap; color: var(--ink-2); font-size: 13px; }
+.twin-cond { margin-top: 6px; font-size: 12px; line-height: 1.4; color: var(--warn-ink); }
+.twin-id { margin-left: 8px; font-size: 12px; color: var(--muted); }
+/* 市场列表：有孪生的市场，点了进 Related 标签 */
+.related-chip { text-decoration: none; }
+.related-chip:hover { background: var(--accent); color: var(--surface); }
+.related-chip.has-gap { background: var(--up-soft); color: var(--up); font-weight: 600; }
+.related-chip.has-gap:hover { background: var(--up); color: var(--surface); }
+.related-chip.mid-gap { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn-ink); font-weight: 600; }
+.related-chip.mid-gap:hover { background: var(--warn); color: var(--ink); }
+.twin-mid { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.twin-mid.pos { color: var(--warn-ink); font-weight: 600; }
+.twin-why { margin-top: 3px; font-size: 12px; color: var(--muted); }
+.twin-toggle {
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.twin-toggle:hover { text-decoration: underline; text-underline-offset: 2px; }
+.twins-table tr.open td { border-bottom-color: transparent; }
+.twin-detail td { background: var(--bg); font-size: 13px; }
+.twins-table tbody tr.twin-detail:hover { background: none; }
+.twin-detail dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 16px; margin: 0; }
+.twin-detail dt { color: var(--muted); font-size: 12px; font-weight: 600; padding-top: 1px; }
+.twin-detail dd { margin: 0; color: var(--ink-2); }
+.twin-detail ul { margin: 0; padding-left: 18px; }
+.twin-links { display: flex; gap: 16px; }
+@media (max-width: 640px) {
+  .twin-detail dl { grid-template-columns: 1fr; gap: 2px; }
+  .twin-detail dd { margin-bottom: 8px; }
+}
+.twin-gap { font-weight: 700; white-space: nowrap; }
+.twin-gap.up { color: var(--up); }
+.twin-gap.flat { color: var(--muted); font-weight: 500; }
 
 /* ---------- 图表 ---------- */
 .chart-card { padding: 16px; }

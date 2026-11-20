@@ -1,6 +1,6 @@
 """把实时指标写进 Postgres，给 Grafana 看板用。
 
-一个 consumer（group = pm-pg-sink）读五个 topic：
+一个 consumer（group = pm-pg-sink）读七个 topic：
 - pm.metrics.book   → 表 metrics_book（主键 asset_id + second）
 - pm.metrics.trades → 表 metrics_trades（主键 asset_id + minute）
 - pm.metrics.depth  → 表 depth_quality（主键 market_id + minute），网站 Depth quality 用
@@ -8,6 +8,9 @@
 - pm.raw.markets    → 表 tokens（asset_id → 市场问题、Yes/No），看板上显示市场名字用；
                       顺便按问题文字给市场打标签 → 表 market_labels（话题、公司，规则见 pmdata.topics.rules）
 - pm.events         → 表 signal_events（主键 event_id），网站 Signals 页用；永久保留
+- pm.twins          → 表 twin_judgments（每组事件对一行）+ market_relations（每对孪生市场一行），网站 Related 用；
+                      一组重新判断后，这组 AI 写的旧关系先标退役（retired_at），新结果里还有的再恢复；
+                      tombstone（这组不再是候选）= 这组的关系全部退役。不删，以后还能回头查。永久保留
 
 可靠性：每批先写数据库、提交事务，成功后才提交 Kafka offset（at-least-once）。
 上游 metrics 程序本身也可能重复输出，所以全部用 upsert（INSERT ... ON CONFLICT DO UPDATE）：
@@ -36,6 +39,7 @@ from pmdata.common.config import (
     TOPIC_METRICS_DEPTH,
     TOPIC_METRICS_EXECUTION,
     TOPIC_METRICS_TRADES,
+    TOPIC_TWINS,
 )
 from pmdata.common.log import setup_logging
 from pmdata.common.timeutil import parse_time
@@ -185,6 +189,48 @@ create table if not exists execution_quality (
 );
 create index if not exists execution_quality_market_ts on execution_quality (market_id, ts);
 create index if not exists execution_quality_ts on execution_quality (ts);
+
+-- 孪生市场（pmdata.twins）：每组事件对一次判断一行（event_a < event_b）
+create table if not exists twin_judgments (
+    event_a text not null,
+    event_b text not null,
+    fingerprint text not null,
+    status text not null,            -- ok / error / retired（不再是候选）
+    error text,
+    relations int,
+    model text,
+    cost_usd double precision,       -- 按 API 价格折算（订阅额度，不实际扣钱）
+    judged_at timestamptz not null default now(),
+    primary key (event_a, event_b)
+);
+-- 每对孪生市场一行（market_a 属于 event_a）。relation 从 A 的角度说（implies = A 是 → B 一定是）。
+-- source = ai / manual：AI 的结果只动 ai 的行。retired_at：市场关闭或重新判断后不再成立，不删
+create table if not exists market_relations (
+    market_a text not null,
+    market_b text not null,
+    event_a text not null,
+    event_b text not null,
+    relation text not null,          -- identical / complement / exclusive / implies / implied_by
+    strength text not null,          -- strict / conditional
+    condition text,
+    differences jsonb not null default '[]',
+    confidence text,
+    reason text,
+    source text not null,
+    model text,
+    judged_at timestamptz not null default now(),
+    retired_at timestamptz,
+    primary key (market_a, market_b)
+);
+create index if not exists market_relations_b on market_relations (market_b);
+create index if not exists market_relations_events on market_relations (event_a, event_b);
+-- 2026-11-20 前 twins 自己建表，那时这一列叫 closed_at
+do $$ begin
+    if exists (select 1 from information_schema.columns
+               where table_name = 'market_relations' and column_name = 'closed_at') then
+        alter table market_relations rename column closed_at to retired_at;
+    end if;
+end $$;
 """
 
 
@@ -254,10 +300,50 @@ UPSERTS = {
 }
 
 
+JUDGMENT_UPSERT = upsert_sql("twin_judgments", ["event_a", "event_b", "fingerprint", "status", "error", "relations",
+                                                "model", "cost_usd", "judged_at"], ["event_a", "event_b"])
+RELATION_COLS = ["market_a", "market_b", "event_a", "event_b", "relation", "strength", "condition", "differences",
+                 "confidence", "reason", "source", "model", "judged_at"]
+# 只覆盖 AI 写的行（人工改过的 manual 不碰）；新结果里有的恢复成「在用」
+RELATION_UPSERT = (upsert_sql("market_relations", RELATION_COLS, ["market_a", "market_b"], ", retired_at = null")
+                   + " where market_relations.source = 'ai'")
+RETIRE_PAIR = ("update market_relations set retired_at = now() "
+               "where event_a = %s and event_b = %s and source = 'ai' and retired_at is null")
+
+
+def write_twins(cur, by_key):
+    """pm.twins 的消息：{「事件A:事件B」: payload，tombstone 为 None}。"""
+    for key, p in by_key.items():
+        a, b = key.split(":", 1)
+        if p is None:      # 这组不再是候选
+            cur.execute(RETIRE_PAIR, (a, b))
+            cur.execute("update twin_judgments set status = 'retired', judged_at = now() "
+                        "where event_a = %s and event_b = %s", (a, b))
+            continue
+        cur.execute(JUDGMENT_UPSERT, (a, b, p["fingerprint"], p["status"], p.get("error"),
+                                      len(p["relations"]) if p["status"] == "ok" else None, p.get("model"),
+                                      p.get("cost_usd"), parse_time(p["judged_at"])))
+        if p["status"] != "ok":     # 判断失败：旧结果先留着，下一轮重试
+            continue
+        cur.execute(RETIRE_PAIR, (a, b))
+        cur.executemany(RELATION_UPSERT, [
+            (r["market_a"], r["market_b"], a, b, r["relation"], r["strength"], r.get("condition"),
+             Jsonb(r.get("differences") or []), r.get("confidence"), r.get("reason"), "ai", p.get("model"),
+             parse_time(p["judged_at"]))
+            for r in p["relations"]])
+
+
 def to_rows(msgs):
-    """一批 Kafka 消息 → {表名: {主键: 行}}。同一批里同一个主键只留最后一条（后到的覆盖先到的）。"""
-    rows = {t: {} for t in UPSERTS}
+    """一批 Kafka 消息 → {表名: {主键: 行}}。同一批里同一个主键只留最后一条（后到的覆盖先到的）。
+    pm.twins 单独放在 "twins"：{key: payload 或 None（tombstone）}，由 write_twins 处理。"""
+    rows = {t: {} for t in UPSERTS} | {"twins": {}}
     for msg in msgs:
+        if msg.topic() == TOPIC_TWINS:
+            key = msg.key().decode() if msg.key() else None
+            if not key or ":" not in key:
+                continue
+            rows["twins"][key] = None if msg.value() is None else json.loads(msg.value())["payload"]
+            continue
         if msg.value() is None:      # pm.raw.markets 的 tombstone（市场关闭）：tokens 保留，历史数据还要显示名字
             continue
         try:
@@ -296,7 +382,9 @@ def to_rows(msgs):
 def write(conn, rows):
     with conn.transaction(), conn.cursor() as cur:
         for table, by_key in rows.items():
-            if by_key:
+            if table == "twins":
+                write_twins(cur, by_key)
+            elif by_key:
                 cur.executemany(UPSERTS[table], list(by_key.values()))
 
 
@@ -350,11 +438,11 @@ def main():
     signal.signal(signal.SIGINT, stop)
 
     consumer.subscribe([TOPIC_METRICS_BOOK, TOPIC_METRICS_TRADES, TOPIC_METRICS_DEPTH, TOPIC_METRICS_EXECUTION,
-                        TOPIC_MARKETS, TOPIC_EVENTS])
+                        TOPIC_MARKETS, TOPIC_EVENTS, TOPIC_TWINS])
     log.info("开始（group=%s）", args.group_id)
     deadline = time.monotonic() + args.duration if args.duration else None
     last_cleanup = last_report = time.monotonic()
-    counts = {t: 0 for t in UPSERTS}
+    counts = {t: 0 for t in UPSERTS} | {"twins": 0}
     try:
         while not stopping and (deadline is None or time.monotonic() < deadline):
             msgs = [m for m in consumer.consume(num_messages=BATCH_SIZE, timeout=1.0) if not m.error()]

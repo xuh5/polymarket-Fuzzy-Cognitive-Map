@@ -22,6 +22,7 @@ const NODES: Node[] = [
   { id: 'tcom', x: 308, y: 430, w: 136, label: 'pm.raw.comments', sub: 'compacted', kind: 'topic' },
 
   { id: 'metrics', x: 476, y: 90, w: 124, label: 'metrics', sub: 'per-second stats', kind: 'service' },
+  { id: 'twins', x: 476, y: 500, w: 124, label: 'twins', sub: 'AI reads the rules', kind: 'service' },
   { id: 'depth', x: 476, y: 170, w: 124, label: 'depth', sub: 'vanishing depth', kind: 'service' },
   { id: 'exec', x: 476, y: 250, w: 124, label: 'execution', sub: 'trade quality', kind: 'service' },
   { id: 'health', x: 476, y: 360, w: 124, label: 'health', sub: 'lag, latency', kind: 'service' },
@@ -33,6 +34,7 @@ const NODES: Node[] = [
   { id: 'tev', x: 636, y: 198, w: 150, label: 'pm.events', sub: 'compacted', kind: 'topic' },
   { id: 'tdep', x: 636, y: 260, w: 150, label: 'pm.metrics.depth', kind: 'topic' },
   { id: 'texec', x: 636, y: 314, w: 150, label: 'pm.metrics.execution', kind: 'topic' },
+  { id: 'ttwins', x: 636, y: 500, w: 150, label: 'pm.twins', sub: 'compacted', kind: 'topic' },
 
   { id: 'redis', x: 826, y: 20, w: 124, label: 'Redis', sub: 'live order books', kind: 'store' },
   { id: 'pgsink', x: 826, y: 168, w: 124, label: 'pg-sink', sub: 'idempotent upsert', kind: 'service' },
@@ -48,10 +50,11 @@ const NODES: Node[] = [
 
 // [从, 到, 走法]。走法：默认从右边出、左边进；down / up = 同一列上下相连；loop = 同一列绕右边连；
 // over / under = 从上方 / 下方绕过中间那一列 topic，不从方块后面穿过
-const EDGES: [string, string, ('down' | 'up' | 'loop' | 'dashed' | 'over' | 'under')?][] = [
+// back = 从最底下绕回左边（pm.twins → collect-clob：订阅名单加上孪生，虚线）
+const EDGES: [string, string, ('down' | 'up' | 'loop' | 'dashed' | 'over' | 'under' | 'back')?][] = [
   ['gamma', 'fetch'], ['ws', 'clob'], ['comm', 'ccom'],
   ['fetch', 'tmk'], ['clob', 'tclob'], ['ccom', 'tcom'],
-  ['tmk', 'clob', 'dashed'],
+  ['tmk', 'clob', 'dashed'], ['tmk', 'twins'], ['twins', 'ttwins'], ['ttwins', 'pgsink'], ['ttwins', 'clob', 'back'],
   ['tclob', 'metrics'], ['tclob', 'depth'], ['tclob', 'exec'], ['tclob', 'health'],
   ['tmk', 'archiver'], ['tclob', 'archiver'], ['tcom', 'archiver'],
   ['metrics', 'tbook'], ['metrics', 'ttr'], ['depth', 'tdep'], ['exec', 'texec'],
@@ -70,7 +73,8 @@ const COLUMNS = [
 ]
 const TOP = 26           // 列标题占的高度，方块整体往下挪
 const W = 1130
-const HEIGHT = 476 + H + TOP + 8
+const LANE = 558         // 最底下那条绕回去的线（back）走的高度
+const HEIGHT = LANE + TOP + 8
 
 const byId = Object.fromEntries(NODES.map((n) => [n.id, n]))
 
@@ -99,6 +103,12 @@ function path(a: Node, b: Node, how?: string) {
     return `M${x1},${y1} H${turn - 10} Q${turn},${y1} ${turn},${y1 - 10} V${by + H / 2 + 10} ` +
       `Q${turn},${by + H / 2} ${b.x},${by + H / 2}`
   }
+  if (how === 'back') {     // 从 topic 底部下到最底下，向左走到采集列右边的空隙，再上来进采集器底部
+    const lane = LANE + TOP
+    const gap = b.x + b.w + 14
+    const xe = b.x + b.w - 30
+    return `M${a.x + a.w / 2},${ay + H} V${lane} H${gap} V${by + H + 16} H${xe} V${by + H}`
+  }
   if (how === 'dashed') {   // 采集器从 pm.raw.markets 读订阅名单：从 topic 底部弯回采集器顶部
     return `M${a.x + 30},${ay + H} C${a.x + 30},${ay + H + 70} ${b.x + b.w - 30},${by - 70} ${b.x + b.w - 30},${by}`
   }
@@ -124,7 +134,7 @@ export default function ArchitectureDiagram() {
     <div className="card arch-card">
       <div className="legend arch-legend">
         {KINDS.map((k) => <span key={k.kind}><span className={`arch-key ${k.kind}`} />{k.label}</span>)}
-        <span><span className="arch-key-line dashed" />Reads the market list</span>
+        <span><span className="arch-key-line dashed" />Picks what to subscribe to</span>
       </div>
       <div className="arch-scroll">
         <svg viewBox={`-2 0 ${W + 4} ${HEIGHT}`} className="arch" role="img"
@@ -137,7 +147,7 @@ export default function ArchitectureDiagram() {
           {COLUMNS.map((c, i) => <text key={i} x={c.x} y={12} className="arch-col">{c.label}</text>)}
           {EDGES.map((e, i) => (
             <path key={i} d={path(byId[e[0]], byId[e[1]], e[2])} markerEnd="url(#arch-arrow)"
-              className={`arch-edge${e[2] === 'dashed' ? ' dashed' : ''}${linked(e) ? ' on' : hover ? ' dim' : ''}`} />
+              className={`arch-edge${e[2] === 'dashed' || e[2] === 'back' ? ' dashed' : ''}${linked(e) ? ' on' : hover ? ' dim' : ''}`} />
           ))}
           {NODES.map((n) => (
             <g key={n.id} className={`arch-node ${n.kind}${hover && !near.has(n.id) ? ' dim' : ''}`}

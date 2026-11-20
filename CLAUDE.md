@@ -49,6 +49,7 @@ python -m pmdata.archive.archiver --duration 90 --group-id pm-archiver-test   # 
 python -m pmdata.metrics.run --group-id pm-metrics-test --warmup-hours 2 --duration 120   # 试跑实时指标（注意：会写进正式的 pm.metrics.* topic）
 python scripts/verify_book_replay.py [日期]             # 回放 bronze 核对本地订单簿（全量约 2.5 分钟、CPU 占满，尽量指定日期）
 python -m pmdata.health.lag --once                   # 打印各 consumer group 的消费积压（只读）
+python -m pmdata.twins.run --every 0 --dry-run         # 孪生市场：只打印这一轮要判断哪些（不调用 AI、不写库）
 python -m pmdata.api.app                               # 网站后端（127.0.0.1:8000，/docs 看接口）；正式跑在 api 容器里，宿主机试跑先停容器或换 --port
 cd web && npm run dev                                  # 网站前端（localhost:5173，/api 转发给后端）；npm run build / npm run lint
 ```
@@ -73,6 +74,7 @@ PYTHONUTF8=1 ../.venv/Scripts/dbt build      # 建所有模型 + 跑所有测试
 - `src/pmdata/topics/`：市场标签（rules.py，按问题文字分话题 + 公司）。
 - `src/pmdata/depth/`：模块 2 假深度识别（tracker.py 纯逻辑，run.py 运行程序）。
 - `src/pmdata/execution/`：成交质量（tracker.py 纯逻辑，run.py 运行程序，结构同 depth）。
+- `src/pmdata/twins/`：孪生市场（candidates.py 挑候选事件对、judge.py 提示词 + 解析 AI 回答、edge.py 缺口计算，都是纯逻辑；run.py 运行程序）。
 - `src/pmdata/health/`：模块 5 管道健康（run.py 主程序；lag.py 消费积压；reconnects.py 断线重连；latency.py 延迟；quality.py 乱序/盘口对不上）。
 - `src/pmdata/api/`：网站后端（FastAPI，只读 Postgres；`app.py` 接口、`queries.py` SQL、`status.py` Status 页面：读 health_* 表算总体状态/可用率/事故）。`src/pmdata/replay/`：模块 3 回放（`timeline.py` 纯逻辑，`bronze.py` 读 bronze）。`web/`：网站前端（Vite + React + TypeScript，Node 24）。
 - `dbt/`：dbt-duckdb 项目。数据库是 `data/warehouse.duckdb`（单文件，同一时间只能一个程序写）；`profiles.yml` 放在项目里；source `bronze` 用 `external_location` 直接读 `../data/bronze/pm.raw.{name}/*/*.parquet`（hive_partitioning 生成 date 列）。`models/staging` → schema `silver`，`models/marts` → schema `gold`（`macros/generate_schema_name.sql` 去掉了 dbt 默认的 `main_` 前缀）；都是 table，每次全量重建。staging 命名 `stg_<来源>__<实体>`，每个模型先按 kafka_partition + kafka_offset 去重（qualify row_number）。
@@ -95,6 +97,8 @@ docker compose up -d --no-deps <服务名>     # 只用新镜像重建指定服�
 - 想验证新镜像又不影响正在跑的容器：用别的标签构建（`-t polymarket-app:test`），再 `docker run --rm --network polymarket_default -e KAFKA_BOOTSTRAP=kafka:19092 polymarket-app:test python -m ...` 跑只读命令。
 
 另有 `postgres`（postgres:17.6，卷 pg-data，5432 端口）和 `grafana`（grafana/grafana:12.1.1，3000 端口，VS Code 端口转发访问，用户名 admin）。密码在根目录 `.env`（POSTGRES_PASSWORD、GRAFANA_ADMIN_PASSWORD，随机生成、不进 Git）：compose 自动读它做变量替换，宿主机程序由 config.py 的 load_dotenv 读。Grafana 的数据源、看板和告警用 provisioning 放在 `grafana/`（看板 JSON 是 `grafana/dashboards/overview.json`，网页上改了要导出覆盖这个文件才会保留；告警是 `grafana/provisioning/alerting/alerts.yml`，发到 Discord）。
+
+`twins`（孪生市场判断）用单独的镜像 `polymarket-twins`（`twins/Dockerfile`：项目代码 + Claude Code 2.1.312），改了代码要 `DOCKER_BUILDKIT=0 docker build -f twins/Dockerfile -t polymarket-twins .` 再 `up -d --no-deps twins`；登录用 `claude setup-token` 生成的长期令牌（.env 的 CLAUDE_CODE_OAUTH_TOKEN，扣订阅额度，不用 API key）。只连 Kafka，不连 Postgres。
 
 `cloudflared`（cloudflare/cloudflared:2026.10.1）：把 api 对外开放成 `api.depthscope.app`，令牌读 .env 的 CLOUDFLARE_TUNNEL_TOKEN；路由在 Cloudflare 网页上配，不在代码里。
 
@@ -125,6 +129,7 @@ Kafka 地址读环境变量 `KAFKA_BOOTSTRAP`（在 `pmdata.common.config`），
 | pm.metrics.depth | 市场 id | 3 | 保留 7 天；假深度识别，按市场每分钟一条 |
 | pm.metrics.execution | 市场 id | 3 | 保留 7 天；成交质量，每笔吃单一条（成交 5 分钟后） |
 | pm.events | event_id（市场 ID:开始秒） | 3 | compact，永久保留；检测出的跳动，同一事件 open → closed → final 三版，只留最新 |
+| pm.twins | 事件对「事件A:事件B」 | 3 | compact，永久保留；孪生市场每组的最新判断（成功 / 失败都写），不再是候选时写 tombstone。读者：pg-sink、collect-clob（订阅加孪生）、twins 自己（判断过哪些） |
 
 create_topics.py 对已存在的 topic 也会按代码同步配置（incremental_alter_configs，值为 None 表示删除该项恢复默认）。注意 compact 只清理已封存的 segment（默认 1GB 或 7 天才封存），所以小 topic 在头 7 天里会保留所有历史版本、offset 远大于 key 数；读 compact topic 一律用 `latest_by_key()`（后读到的覆盖先读到的）。
 
@@ -260,7 +265,7 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
   - 价格图用 Lightweight Charts（用户 2026-10-29 选，其他图仍是手写 SVG）：横轴按点的序号等距排、不按时间，所以缺的时间格要用上一格的值补齐。下栏成交量来自 `/api/markets/{id}/trades`，看涨往上、看跌往下（用户看过，保持不改成股票那种单向柱）。
   - 部署（用户 2026-10-28 定）：后端 FastAPI 跑在台式机 Docker 里，用 Cloudflare Tunnel 对外；前端 React 放 Cloudflare Pages。
     2026-11-02 上线：域名 depthscope.app（在用户的 Cloudflare 账号里）。后端 `api.depthscope.app` → cloudflared 容器（令牌在 .env 的 CLOUDFLARE_TUNNEL_TOKEN）→ `http://api:8000`；CORS 只放 depthscope.app / www；限流在 Cloudflare 规则里（URI Path 以 /api/ 开头，每 IP 10 秒 100 次）。前端改用 Workers 静态资源（`web/wrangler.jsonc`，Pages 已是旧流程），push 到 master 自动构建，构建变量 VITE_API_BASE。用户决定不建只读数据库用户。
-  - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Trades / Depth quality 四个 tab。
+  - 网站（用户 2026-10-28 定）：名字 Depthscope，英文，浅色。顶部导航 Markets / Signals / Fuzzy Map / Status / About；市场详情页分 Overview（走势、深度图、滑点）/ Replay / Trades / Depth quality / Related 五个 tab。
 
 - 模块 5（2026-10-29 起）：先做功能再做网站（用户定）。已完成：消费积压 `pmdata.health.lag`（容器 health，每分钟每分区一行写 Postgres 表 health_consumer_lag，留 7 天；只算条数，按秒的积压以后再说）。吞吐量不另写程序：视图 health_throughput 用相邻两次 offset 相减（processed = 已提交涨了多少，written = 末尾涨了多少）。archiver 攒 5 分钟才提交，平时积压几万条是正常的。断线重连：health 用 group pm-health 读 pm.raw.clob 的缺口标记，按 conn_id 一次重连一行写表 health_reconnects（永久保留；「加入订阅名单」不算）。延迟：每分钟从 metrics_book 汇总四段（交易所→收到、收到→算完、算完→入库、端到端）的 p50/p99 写表 health_latency（按 inserted_at 归分钟，永久保留，启动时补算现存 7 天）。行情质量：health 自己维护一份订单簿（启动预热 24 小时，复用 metrics 的 plan_start），每分钟写表 health_stream_quality——乱序（同市场 price_change 交易所时间倒退，交易所本身一天约 180 次、多为 1～7ms；只比 price_change 之间，和 best_bid_ask 比全是假乱序）、盘口对不上（本地买一卖一 vs 交易所带的，代表漏消息）、盘口不可用时忽略的变化。health 的 Postgres 连接用 autocommit（2026-10-29 踩坑：单独一句查询隐式开事务没提交，之后的写入全变成 savepoint 没落库，还锁住了表）。
 - 2026-10-29 补回的重连记录发现：10-26 断网后 SSL 证书校验失败断断续续持续到 10-27 16:21（18 次，每次 16～125 秒）；10-29 08:46 台式机重启后 Docker 到 11:42 才起来，停了约 3 小时（Grafana 也没起来，所以没告警）。
@@ -284,6 +289,16 @@ Producer 约定：`enable.idempotence=True` + `lz4` 压缩；HTTP 请求遇到 4
 - 成交质量（2026-11-19 上线）：每笔吃单算成交前盘口、吃了几档、比中间价多付多少、挂单方 1s/10s/1m/5m 后按中间价估值的赚亏（markout）。服务 execution（group pm-execution）→ pm.metrics.execution → pg-sink → 表 execution_quality（主键 tx_hash+asset_id，留 7 天）→ 市场页 Trades 标签（接口 `/api/markets/{id}/executions`）。
   WS 一笔吃单只推一条成交（总量 + 均价，均价四舍五入到 0.001），盘口减少比成交消息早约 21ms，所以「成交前盘口」取对应那次盘口减少之前的；扫多档 = 同一交易所时间戳挂单侧几档一起减少。按钱包区分挂单方/吃单方（Data API maker 行）用户 2026-11-19 决定不做。
   对账 2026-11-19 通过：05:56～07:58 UTC 从线上预热起点重放 bronze，1006 笔逐字段全部一致。数据源：Polymarket US（接口另一套、行情要 key、不上链）和 Kalshi（WebSocket 要美国 KYC 账户的 key）都不换。
+
+- 孪生市场（2026-11-19 上线）：不同事件里、按结算规则结果绑在一起的市场（互斥 / 包含 / 互补 / 同一个问题）。起因是 Anthropic「收盘市值 < 1.25T」和另一个事件的「> 1.25T」出现过价格矛盾（当天回放：挂在薄的一边、被吃后 1 秒去厚的一边吃单补上，26 小时约 $50～250，资金约 $0.5～2.4 万）。
+  做法（参考 arXiv 2508.03474）：规则挑候选事件对（同一名字 + 截止相差 ≤ 12 小时 + 事件标题相似 ≥ 0.3，654 组）→ AI 读两边完整规则，列出四种结果组合哪些可能 → 代码推出关系。标题看不出、要读规则的口径差异（人工核对 4 组时发现）：榜单 Style Control 开关、按模型 / 按公司排、月底时刻 vs 截止前任何时候、边界归哪边（「< 1.25T」×「> 1.25T」其实是互斥不是互补：正好 1.25T 两边都 No）、数据源、AutoEval 排除、靠外部事实（发行价）。
+  服务 twins（每小时，默认全市场 --scope all，订阅名单相关的优先；指纹 = 市场 + 规则 + 提示词版本，没变不重判；每轮最多 40 组）→ pm.twins → pg-sink → 表 twin_judgments / market_relations（source ai / manual，AI 不覆盖 manual；重判后不再成立或事件关闭的标 retired_at 不删）。2026-11-20 改成只读写 Kafka（原来直接写库，是唯一的例外）：判断过哪些读 pm.twins，订阅名单用 select_markets 算；一轮超过 20% 的已判断组同时消失就不写 tombstone。
+  订阅名单加孪生（2026-11-20 用户同意）：select_markets 改成按「理由」合并（reasons），前 30 个是 top volume，expand 传入额外理由（pmdata.twins.watch：前 30 个的孪生，只扩一层），最多再加 MAX_EXTRA=40 个；读 pm.twins 失败就只订阅前 30 个。当时 30 → 47 个市场。实测孪生市场挂单改得勤：17 个孪生 25 分钟的消息比前 30 个还多（52.7%），消息量约翻倍（Parquet 每天多约 130MB）；用户定先跑一天看全天实测再决定上限。AI 用 `claude -p --model haiku`（订阅额度，用户 2026-11-19 选；ChatGPT 额度可用 Codex CLI，以后加），要加 `--setting-sources "" --strict-mcp-config`，否则带 3 万多 token 的个人设置、理由写成中文；`--bare` 不认订阅登录。实测 Haiku 两组 165 条关系和人工判断全部一致，一组 30～110 秒、按 API 价格约 $0.006～0.018。
+  网站：市场页 Related 标签，只列两边都在订阅、都还开着的孪生（用户定），标签带个数、没有时灰色；按「保证拿回 $1 的组合」的成本排序，显示缺口（吃单、不含手续费）。接口 `/api/markets/{id}/twins`；市场列表每行有「Related N」标记（`/api/markets` 的 twins 字段），点了进 `?tab=related`。缺口另按两边中间价算一份（edge.mid_gap，买 No = 1 − 中间价）：列表上吃单有缺口标绿、只有中间价有标黄（用户 2026-11-20 要求，字段 twin_gap / twin_mid_gap），Related 每行 Gap 下显示 mid。每行可展开 Details，有 Polymarket 链接。
+  市场短编号（用户 2026-11-20 要求，方便报问题、搜索）：市场 ID 去掉 0x 的前 8 位（`web/src/format.ts` 的 shortId，4896 个市场无重复），列表、市场页、Related 都显示，列表搜索框能按编号搜。
+  已知不足：AI 列出了会让关系失效的差异却仍标 strict（如「婚外情 3 次」×「第四次」标成严格互补，实为有条件）；可加硬规则「有差异最多 conditional」，用户还没定。
+  已知错误（2026-11-20 全部 709 组扫描发现）：Haiku 会把方向判反——「X 有最好的中国 AI 模型」×「X 有最好的 AI 模型」18 组全标成「中国最好 → 全球最好」（理由写对了、组合勾反了），算出 +59¢ 之类的假缺口。拟修：先写理由再勾组合 + 价格严重违反关系的标可疑，用户还没定。
+  规模（2026-11-20 临时统计）：tech 开放市场 2894 个；politics 10144 个 / 1754 个事件、候选事件对 70350 组（AI 判不完），问题文字完全相同的跨事件市场只有 2 对。用户结论：孪生缺口基本吃不到钱。
 
 ## 以后的想法（暂不做）
 - Schema Registry（用户 2026-10-20 问起）：建议在阶段 3 引入，用于我们自己定义格式的 pm.metrics.* topic（Avro 或 JSON Schema，兼容性规则 BACKWARD），可顺带用 Kafka Connect JDBC Sink 写 Postgres 代替手写 consumer；raw topic 的 payload 是外部原样数据、格式不归我们管，不适合强约束，最多给信封注册一个宽松 schema。需新增 confluentinc/cp-schema-registry:7.9.0 容器（镜像要用户在台式机本地 pull）。

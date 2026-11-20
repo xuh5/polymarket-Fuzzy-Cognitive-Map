@@ -15,6 +15,7 @@ TOPIC_METRICS_TRADES = "pm.metrics.trades"   # 成交类指标，按 token 每�
 TOPIC_METRICS_DEPTH = "pm.metrics.depth"     # 假深度识别，按市场每分钟一条
 TOPIC_METRICS_EXECUTION = "pm.metrics.execution"   # 成交质量，每笔吃单一条（成交 5 分钟后，等完 markout）
 TOPIC_EVENTS = "pm.events"                   # 检测出的事件（跳动），key 是 event_id
+TOPIC_TWINS = "pm.twins"                     # 孪生市场的判断结果，key 是事件对「事件A:事件B」
 
 GAMMA_URL = "https://gamma-api.polymarket.com"
 CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"

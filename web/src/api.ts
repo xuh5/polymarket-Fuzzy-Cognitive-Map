@@ -18,6 +18,9 @@ export interface Market {
   spread: number | null
   logodds_chg_60m: number | null
   updated_at: string
+  twins: number            // 市场页 Related 标签里有几个孪生市场（两边都在订阅）
+  twin_gap: number | null  // 这些孪生里最大的缺口（1 = $1，吃单、不含手续费）；盘口不可用时 null
+  twin_mid_gap: number | null  // 同上，但两边都按中间价算（挂单等成交的价格）
 }
 
 export interface Health {
@@ -285,3 +288,31 @@ export interface Execution {
 
 export const fetchExecutions = (marketId: string, hours: number) =>
   getJson<Execution[]>(`/api/markets/${marketId}/executions?hours=${hours}`)
+
+// 孪生市场（后端 pmdata.twins）：别的事件里、按结算规则和这个市场绑在一起的市场。
+// relation 从当前市场的角度说：implies = 这个是 Yes → 那个一定是 Yes
+export type TwinRelation = 'identical' | 'complement' | 'exclusive' | 'implies' | 'implied_by'
+export type Side = 'Yes' | 'No'
+export interface TwinQuote { bid: number | null; ask: number | null }
+export interface Twin {
+  market_id: string
+  question: string
+  slug: string | null
+  relation: TwinRelation
+  strength: 'strict' | 'conditional'
+  condition: string
+  differences: string[]
+  confidence: 'high' | 'medium' | 'low'
+  reason: string
+  source: 'ai' | 'manual'
+  model: string | null     // 判断用的模型，比如 claude:haiku
+  judged_at: string | null
+  this_quote: TwinQuote | null
+  other_quote: TwinQuote | null
+  // 买一组「保证至少拿回 $1」的组合：这边买哪边、那边买哪边、成本、1 − 成本（吃单、不含手续费）
+  gap: { this: Side; other: Side; cost: number; edge: number } | null
+  mid_edge: number | null  // 同一组合按两边中间价算的缺口（挂单等成交的价格）
+}
+
+export const fetchTwins = (marketId: string) =>
+  getJson<{ market_id: string; twins: Twin[] }>(`/api/markets/${marketId}/twins`)

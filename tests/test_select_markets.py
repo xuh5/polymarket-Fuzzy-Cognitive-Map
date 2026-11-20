@@ -74,3 +74,22 @@ class TestSelectMarkets:
     def test_output_carries_condition_id_for_kafka_key(self):
         (s,) = select_markets([market(7)], now=NOW)
         assert s["condition_id"] == "0xcond7"
+
+    def test_reasons_and_expand_adds_twins(self):
+        markets = [market(1, volume=50), market(2, volume=40), market(3, volume=5), market(4, volume=9),
+                   market(5, volume=8, acceptingOrders=False)]
+
+        def expand(chosen):
+            assert chosen == {"0xcond1", "0xcond2"}            # 拿到的是前 top_n 个
+            return {"0xcond3": "twin of 0xcond1", "0xcond4": "twin of 0xcond2", "0xcond5": "twin of 0xcond1",
+                    "0xcond2": "twin of 0xcond1"}
+        selected = select_markets(markets, top_n=2, now=NOW, expand=expand)
+        assert [(s["market_id"], s["reasons"]) for s in selected] == [
+            ("1", ["top volume"]), ("2", ["top volume"]),
+            ("4", ["twin of 0xcond2"]), ("3", ["twin of 0xcond1"])]   # 额外的按成交额排；不能下单的 5 不加
+
+    def test_expand_capped_by_max_extra(self):
+        markets = [market(i, volume=100 - i) for i in range(1, 6)]
+        selected = select_markets(markets, top_n=1, now=NOW, max_extra=2,
+                                  expand=lambda chosen: {f"0xcond{i}": "x" for i in range(2, 6)})
+        assert [s["market_id"] for s in selected] == ["1", "2", "3"]

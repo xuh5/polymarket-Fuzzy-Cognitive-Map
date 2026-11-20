@@ -14,6 +14,7 @@ from pmdata.common.config import (
     TOPIC_METRICS_DEPTH,
     TOPIC_METRICS_EXECUTION,
     TOPIC_METRICS_TRADES,
+    TOPIC_TWINS,
 )
 
 SEVEN_DAYS_MS = str(7 * 24 * 60 * 60 * 1000)
@@ -31,6 +32,9 @@ TOPICS = [
     (TOPIC_METRICS_EXECUTION, 3, {"retention.ms": SEVEN_DAYS_MS}),
     # 检测出的事件（key 是 event_id）：同一事件会写好几版（open → closed → final），只留最新一版、永久保留
     (TOPIC_EVENTS, 3, {"cleanup.policy": "compact", "retention.ms": None}),
+    # 孪生市场（key 是事件对）：每组只留最新一次判断，永久保留；一组不再是候选时写 tombstone。
+    # twins 启动时读它就知道哪些组判断过，采集器读它把孪生加进订阅，pg-sink 读它写 Postgres
+    (TOPIC_TWINS, 3, {"cleanup.policy": "compact", "retention.ms": None}),
 ]
 
 

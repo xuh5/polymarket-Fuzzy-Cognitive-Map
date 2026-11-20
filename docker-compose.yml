@@ -240,6 +240,23 @@ services:
     command: python -m pmdata.health.run
     logging: *logging
 
+  # 孪生市场：每小时读 pm.raw.markets，挑候选事件对交给 AI（claude -p，用订阅额度）判断，写 pm.twins（pg-sink 落库）。
+  # 单独的镜像（多装了 Claude Code）：DOCKER_BUILDKIT=0 docker build -f twins/Dockerfile -t polymarket-twins .
+  twins:
+    build:
+      context: .
+      dockerfile: twins/Dockerfile
+    image: polymarket-twins
+    container_name: twins
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP: kafka:19092
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+    command: python -m pmdata.twins.run
+    logging: *logging
+
   # 网站后端（FastAPI）：只读 Postgres、Redis 和 bronze（回放用），不连 Kafka
   api:
     build: .

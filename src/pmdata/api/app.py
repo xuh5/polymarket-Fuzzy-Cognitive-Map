@@ -26,6 +26,7 @@ from pmdata.api import queries, status
 from pmdata.book.cache import KEY_PREFIX
 from pmdata.common.config import API_CORS_ORIGINS, PG_DSN, REDIS_URL
 from pmdata.replay import bronze as replay_bronze
+from pmdata.twins import edge
 
 # open=False：导入模块时不连数据库（测试不需要 Postgres），启动服务时在 lifespan 里再打开
 pool = ConnectionPool(PG_DSN, min_size=1, max_size=10, kwargs={"row_factory": dict_row}, open=False)
@@ -72,8 +73,13 @@ def health(conn: Conn):
 
 
 @app.get("/api/markets")
-def markets(conn: Conn, hours: Annotated[int, Query(ge=1, le=168)] = 24):
-    return queries.list_markets(conn, hours)
+def markets(conn: Conn, r: Redis, hours: Annotated[int, Query(ge=1, le=168)] = 24):
+    """twin_gap / twin_mid_gap：这个市场所有孪生里最大的缺口（吃单 / 按中间价，同 /twins 的 edge / mid_edge），
+    列表上一眼看出 Related 里有没有正的。"""
+    rows = queries.list_markets(conn, hours)
+    best = best_twin_gaps(conn, r) if any(m.get("twins") for m in rows) else {}
+    return [{**m, "twin_gap": best.get(m["market_id"], {}).get("taker"),
+             "twin_mid_gap": best.get(m["market_id"], {}).get("mid")} for m in rows]
 
 
 @app.get("/api/markets/{market_id}/history")
@@ -172,6 +178,75 @@ def executions(conn: Conn, market_id: str, hours: Annotated[int, Query(ge=1, le=
     """成交质量：每笔吃单的成交前盘口、吃单成本和挂单方事后赚亏（markout）。"""
     tokens_or_404(conn, market_id)
     return queries.executions(conn, market_id, hours)
+
+
+def top_of_book(r, asset_ids):
+    """Redis 里当前盘口的 (买一, 卖一)；不可用的给 None。"""
+    out = {}
+    for aid in asset_ids:
+        raw = r.get(KEY_PREFIX + aid)
+        if raw is None:
+            out[aid] = None
+            continue
+        b = json.loads(raw)
+        out[aid] = (float(b["bids"][0][0]) if b["bids"] else None, float(b["asks"][0][0]) if b["asks"] else None)
+    return out
+
+
+def best_twin_gaps(conn, r):
+    """每个市场所有孪生里最大的 edge：{市场: {"taker": .., "mid": ..}}（同一组从哪边看都一样）。
+    Redis 不可用时返回空，不让列表报错。"""
+    rows = queries.twins(conn)
+    try:
+        quotes = top_of_book(r, {x["asset_a"] for x in rows} | {x["asset_b"] for x in rows})
+    except redis.RedisError:
+        return {}
+    best = {}
+    for x in rows:
+        qa, qb = quotes[x["asset_a"]], quotes[x["asset_b"]]
+        if not (qa and qb):
+            continue
+        for kind, g in (("taker", edge.gap(x["relation"], qa, qb)), ("mid", edge.mid_gap(x["relation"], qa, qb))):
+            if g is None:
+                continue
+            for m in (x["market_a"], x["market_b"]):
+                b = best.setdefault(m, {})
+                b[kind] = max(b.get(kind, g["edge"]), g["edge"])
+    return best
+
+
+@app.get("/api/markets/{market_id}/twins")
+def twins(conn: Conn, r: Redis, market_id: str):
+    """孪生市场：别的事件里、按结算规则和这个市场有严格逻辑关系的市场（AI 判断，见 pmdata.twins）。
+
+    只列两边都在订阅、都还开着的。relation 换成从当前市场的角度（implies = 这个是 Yes → 那个一定是 Yes）。
+    gap：按两边当前 Yes 的买一卖一，买一组「保证至少拿回 1」的组合要多少钱（吃单、不含手续费），
+    edge > 0 就是有缺口；盘口暂时不可用时为 null。mid_edge 是同样的组合按两边中间价算的缺口。按 edge 从大到小排。
+    """
+    rows = queries.twins(conn, market_id)
+    try:
+        quotes = top_of_book(r, {x["asset_a"] for x in rows} | {x["asset_b"] for x in rows})
+    except redis.RedisError as e:
+        raise HTTPException(503, "订单簿服务暂时不可用") from e
+    out = []
+    for x in rows:
+        mine = "a" if x["market_a"] == market_id else "b"
+        other = "b" if mine == "a" else "a"
+        relation = x["relation"] if mine == "a" else edge.flip(x["relation"])
+        qm, qo = quotes[x[f"asset_{mine}"]], quotes[x[f"asset_{other}"]]
+        g = edge.gap(relation, qm, qo) if qm and qo else None
+        gm = edge.mid_gap(relation, qm, qo) if qm and qo else None
+        out.append({
+            "market_id": x[f"market_{other}"], "question": x[f"question_{other}"], "slug": x[f"slug_{other}"],
+            "relation": relation, "strength": x["strength"], "condition": x["condition"],
+            "differences": x["differences"], "confidence": x["confidence"], "reason": x["reason"],
+            "source": x["source"], "model": x.get("model"), "judged_at": x["judged_at"],
+            "this_quote": qm and {"bid": qm[0], "ask": qm[1]}, "other_quote": qo and {"bid": qo[0], "ask": qo[1]},
+            "gap": g and {"this": g["a"], "other": g["b"], "cost": g["cost"], "edge": g["edge"]},
+            "mid_edge": gm and gm["edge"],
+        })
+    out.sort(key=lambda t: (t["gap"] is None, -(t["gap"] or {}).get("edge", 0), t["question"]))
+    return {"market_id": market_id, "twins": out}
 
 
 @app.get("/api/signals")

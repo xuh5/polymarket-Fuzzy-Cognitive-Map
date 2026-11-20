@@ -47,8 +47,9 @@ def test_markets_passes_hours():
     client, conn = client_with([{"market_id": "0xM", "question": "Q?", "mid": 0.45}])
     r = client.get("/api/markets?hours=6")
     assert r.status_code == 200
-    assert r.json() == [{"market_id": "0xM", "question": "Q?", "mid": 0.45}]
+    assert r.json() == [{"market_id": "0xM", "question": "Q?", "mid": 0.45, "twin_gap": None, "twin_mid_gap": None}]
     assert conn.calls[0][1] == (6,)
+    assert len(conn.calls) == 1   # 没有孪生就不查关系
 
 
 def test_markets_rejects_bad_hours():
@@ -179,6 +180,49 @@ def test_book_redis_down_503():
     client, _ = client_with_redis(TOKENS, FakeRedis(fail=True))
     assert client.get("/api/markets/0xM/book").status_code == 503
 
+
+
+def twin_row(**kw):
+    return {"market_a": "0xLOW", "market_b": "0xHIGH", "relation": "implies", "strength": "strict", "condition": "",
+            "differences": ["boundary"], "confidence": "high", "reason": "r", "source": "ai", "judged_at": None,
+            "asset_a": "YL", "question_a": "Below?", "slug_a": "low", "asset_b": "YH", "question_b": "Above?",
+            "slug_b": "high", **kw}
+
+
+def book_raw(bid, ask):
+    return json.dumps({"bids": [[str(bid), "1"]] if bid else [], "asks": [[str(ask), "1"]] if ask else []})
+
+
+def test_twins_from_current_market_view():
+    # 表里是 A=0xLOW implies B=0xHIGH；从 0xHIGH 看就是 implied_by，缺口按两边买一卖一算
+    client, conn = client_with_redis([twin_row()], FakeRedis({"book:YL": book_raw(0.50, 0.52),
+                                                             "book:YH": book_raw(0.44, 0.45)}))
+    j = client.get("/api/markets/0xHIGH/twins").json()
+    t = j["twins"][0]
+    assert t["market_id"] == "0xLOW" and t["question"] == "Below?" and t["relation"] == "implied_by"
+    assert t["this_quote"] == {"bid": 0.44, "ask": 0.45}
+    assert t["gap"] == {"this": "Yes", "other": "No", "cost": 0.95, "edge": 0.05}
+    assert t["mid_edge"] == 0.065           # 0.445 + (1 − 0.51)
+    assert conn.calls[0][1] == {"m": "0xHIGH"}
+
+
+def test_twins_sorted_by_edge_and_missing_book():
+    rows = [twin_row(market_b="0xB1", asset_b="YB1", question_b="Gone?", relation="exclusive"),
+            twin_row(market_b="0xB2", asset_b="YB2", question_b="Big gap?", relation="exclusive")]
+    client, _ = client_with_redis(rows, FakeRedis({"book:YL": book_raw(0.6, 0.62), "book:YB2": book_raw(0.5, 0.52)}))
+    j = client.get("/api/markets/0xLOW/twins").json()
+    assert [t["question"] for t in j["twins"]] == ["Big gap?", "Gone?"]   # 盘口不可用的排最后
+    assert j["twins"][1]["gap"] is None and j["twins"][1]["other_quote"] is None
+
+
+def test_markets_best_twin_gap():
+    # 列表和关系共用一个 FakeConn：两种行的字段合在一起
+    row = {**twin_row(relation="exclusive"), "market_id": "0xLOW", "twins": 1}
+    client, conn = client_with_redis([row], FakeRedis({"book:YL": book_raw(0.6, 0.62), "book:YH": book_raw(0.5, 0.52)}))
+    j = client.get("/api/markets").json()
+    assert j[0]["twin_gap"] == 0.1          # 两边买 No：0.4 + 0.5
+    assert j[0]["twin_mid_gap"] == 0.12     # 按中间价：0.39 + 0.49
+    assert conn.calls[1][1] == {"m": None}
 
 
 def test_replay_passes_tokens_and_window(monkeypatch):

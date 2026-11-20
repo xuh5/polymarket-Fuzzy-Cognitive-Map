@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { fetchBook, fetchHistory, fetchMarket, fetchReplayPeriods, fetchTrades, polymarketUrl } from '../api'
+import { fetchBook, fetchHistory, fetchMarket, fetchReplayPeriods, fetchTrades, fetchTwins, polymarketUrl } from '../api'
 import BookLadder from '../components/BookLadder'
 import Change from '../components/Change'
 import DepthChart from '../components/DepthChart'
@@ -10,7 +10,8 @@ import PriceChart from '../components/PriceChart'
 import ReplayPanel from '../components/ReplayPanel'
 import SlippageCalc from '../components/SlippageCalc'
 import TradesPanel from '../components/TradesPanel'
-import { ago, cents, endDate, pct, pointsChange, usd } from '../format'
+import TwinsPanel from '../components/TwinsPanel'
+import { ago, cents, endDate, pct, pointsChange, shortId, usd } from '../format'
 import { LENGTHS, minuteFloor, windowAtEnd } from '../replay'
 import { usePolling } from '../usePolling'
 
@@ -21,7 +22,7 @@ const RANGES = [
   { label: '24H', minutes: 1440, bucket: 300 },
 ]
 const DEPTH_RANGES = [0.05, 0.1, 0.25]
-const TABS = ['Overview', 'Replay', 'Trades', 'Depth quality'] as const
+const TABS = ['Overview', 'Replay', 'Trades', 'Depth quality', 'Related'] as const
 
 function Segmented<T extends string | number>({ options, value, onChange, label, render }: {
   options: readonly T[]; value: T; onChange: (v: T) => void; label: string; render?: (v: T) => string
@@ -44,7 +45,7 @@ export default function MarketPage() {
   const { marketId = '' } = useParams()
   // 网址带上回放的时间（?replay=开始时间&len=分钟），回放某一刻可以直接发链接给别人
   const [params, setParams] = useSearchParams()
-  const [tab, setTab] = useState<(typeof TABS)[number]>(() => (params.has('replay') ? 'Replay' : 'Overview'))
+  const [tab, setTab] = useState<(typeof TABS)[number]>(() => (params.has('replay') ? 'Replay' : params.get('tab') === 'related' ? 'Related' : 'Overview'))
   const [replayAt, setReplayAt] = useState<number | null>(null)
   const [range, setRange] = useState(RANGES[0])
   const [outcomeIndex, setOutcomeIndex] = useState(1)
@@ -60,6 +61,9 @@ export default function MarketPage() {
   const book = usePolling(() => fetchBook(marketId, outcomeIndex), 2000, `${marketId}/${outcomeIndex}`)
   // 正在订阅的市场最后一段一直在变长，隔一分钟刷新一次
   const periods = usePolling(() => fetchReplayPeriods(marketId), 60000, marketId)
+  // 孪生市场：标签上要显示个数，所以不管在哪个标签都要拉；缺口跟着盘口变，5 秒一次
+  const twins = usePolling(() => fetchTwins(marketId), 5000, marketId)
+  const nTwins = twins.data?.twins.length ?? 0
 
   const m = market.data
   if (market.failed && !m) {
@@ -105,6 +109,7 @@ export default function MarketPage() {
           <Labels topic={m.topic} company={m.company} />
           {endDate(m.end_date) && <span>Ends {endDate(m.end_date)}</span>}
           {first.updated_at && <span>Updated {ago(first.updated_at)}</span>}
+          <span className="mono" title={marketId}>#{shortId(marketId)}</span>
           {m.slug && (
             <a className="ext-link" href={polymarketUrl(m.slug)} target="_blank" rel="noreferrer">
               View on Polymarket ↗
@@ -139,11 +144,19 @@ export default function MarketPage() {
       </section>
 
       <div className="tabs" role="tablist" aria-label="Market views">
-        {TABS.map((t) => (
-          <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''}
-            onClick={() => switchTab(t)}>{t}</button>
-        ))}
+        {TABS.map((t) => {
+          // Related：有孪生时带个数；没有就灰掉（一直显示，让人知道有这个功能）
+          const empty = t === 'Related' && nTwins === 0 && tab !== 'Related'
+          return (
+            <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''}
+              disabled={empty} title={empty ? 'No tracked market in another event is tied to this one' : undefined}
+              onClick={() => switchTab(t)}>
+              {t}{t === 'Related' && <span className="tab-count">{nTwins}</span>}
+            </button>
+          )
+        })}
       </div>
+      {tab === 'Related' && <TwinsPanel twins={twins.data?.twins ?? []} />}
 
       {tab === 'Replay' && !p && (
         <div className="card notice">{periods.failed ? "Couldn't load the recorded periods." : 'Loading…'}</div>

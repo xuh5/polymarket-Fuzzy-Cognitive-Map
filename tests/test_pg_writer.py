@@ -124,3 +124,52 @@ def test_event_rows_from_detector_output():
     assert row["peak_at"] == datetime.fromtimestamp(300, UTC) and row["book_since"] == datetime.fromtimestamp(0, UTC)
     assert row["move_type"] == "both" and row["mid_after_30m"] is None
     assert "where array_position" in UPSERTS["signal_events"]      # 状态不倒退
+
+
+class KeyedMsg(FakeMsg):
+    def __init__(self, topic, key, value):
+        super().__init__(topic, value)
+        self._k = key
+
+    def key(self):
+        return self._k.encode()
+
+
+def twin_payload(status="ok", relations=None):
+    return {"event_a": "1", "event_b": "2", "fingerprint": "fp", "status": status, "error": None,
+            "model": "claude:haiku", "cost_usd": 0.01, "judged_at": "2026-11-20T01:00:00.000Z",
+            "relations": relations if relations is not None else [
+                {"market_a": "0xA", "market_b": "0xB", "relation": "exclusive", "strength": "strict",
+                 "condition": "", "differences": ["d"], "confidence": "high", "reason": "r"}]}
+
+
+def test_twins_rows_keep_last_and_tombstone():
+    rows = to_rows([KeyedMsg("pm.twins", "1:2", {"source": "twins", "payload": twin_payload("error")}),
+                    KeyedMsg("pm.twins", "1:2", {"source": "twins", "payload": twin_payload()}),
+                    KeyedMsg("pm.twins", "3:4", None)])
+    assert rows["twins"]["1:2"]["status"] == "ok"      # 同一组只留最后一条
+    assert rows["twins"]["3:4"] is None                # tombstone
+
+
+class FakeCursor:
+    def __init__(self):
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append(("execute", sql.split()[0], params))
+
+    def executemany(self, sql, seq):
+        self.calls.append(("executemany", sql.split()[0], list(seq)))
+
+
+def test_write_twins_retires_then_upserts():
+    from pmdata.sink.pg_writer import RELATION_UPSERT, write_twins
+    cur = FakeCursor()
+    write_twins(cur, {"1:2": twin_payload(), "3:4": None, "5:6": dict(twin_payload("error"), event_a="5")})
+    kinds = [(c[0], c[1]) for c in cur.calls]
+    # 1:2 成功：记判断 → 这组 AI 的旧关系先退役 → 写新关系（恢复成在用）
+    assert kinds[:3] == [("execute", "insert"), ("execute", "update"), ("executemany", "insert")]
+    assert cur.calls[2][2][0][:5] == ("0xA", "0xB", "1", "2", "exclusive")
+    # 3:4 tombstone：关系全部退役、判断记成 retired；5:6 失败：只记判断，不动关系
+    assert kinds[3:] == [("execute", "update"), ("execute", "update"), ("execute", "insert")]
+    assert "retired_at = null" in RELATION_UPSERT and "source = 'ai'" in RELATION_UPSERT

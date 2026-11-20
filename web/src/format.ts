@@ -10,6 +10,10 @@ export const pct = (p: number | null) => (p == null ? '—' : `${(p * 100).toFix
 // 价格按美分显示（Polymarket 的习惯：0.073 美元 = 7.3¢）
 export const cents = (p: number | null) => (p == null ? '—' : `${(p * 100).toFixed(1)}¢`)
 
+// 市场的短编号：市场 ID（0x 开头的 conditionId）去掉 0x 后的前 8 位。2026-11-19 查过全部 4896 个市场没有重复，
+// 网站上到处显示它，用户报问题、在列表里搜索都用这个
+export const shortId = (marketId: string) => marketId.replace(/^0x/, '').slice(0, 8)
+
 // 后端给的是 60 分钟 log-odds 变化，换算成概率变了几个百分点，用户更好理解：
 // 60 分钟前的 log-odds = 现在的 log-odds − 变化量（后端算的时候价格也夹在 [0.001, 0.999]）
 export function pointsChange(mid: number | null, logoddsChg: number | null): number | null {

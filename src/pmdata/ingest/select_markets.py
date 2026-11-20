@@ -8,6 +8,7 @@ from pmdata.common.kafka import latest_by_key
 
 TOP_N = 30
 MIN_DAYS_LEFT = 2   # 离到期不足这么多天的市场不订阅
+MAX_EXTRA = 40      # 前 TOP_N 个之外，按别的理由（比如孪生）最多再加几个
 
 
 def load_latest_markets():
@@ -47,8 +48,13 @@ def days_left(market, now):
     return (datetime.fromisoformat(end) - now) / timedelta(days=1)
 
 
-def select_markets(markets, top_n=TOP_N, min_days_left=MIN_DAYS_LEFT, now=None):
-    """能下单 + 有订单簿 + 离到期至少 min_days_left 天 → 按 24 小时成交额从高到低 → 取前 top_n 个。
+def select_markets(markets, top_n=TOP_N, min_days_left=MIN_DAYS_LEFT, now=None, expand=None, max_extra=MAX_EXTRA):
+    """订阅名单 = 几个「理由」合起来，每个市场记下 reasons（为什么订阅）：
+
+    1. 能下单 + 有订单簿 + 离到期至少 min_days_left 天 → 按 24 小时成交额从高到低 → 前 top_n 个（"top volume"）
+    2. expand（可选）：传入第 1 步选中的市场 ID 集合，返回 {市场 ID: 理由} —— 比如它们的孪生市场
+       （pmdata.twins.watch）。只收符合第 1 步条件（能下单、离到期够久）的，按成交额最多加 max_extra 个。
+       这个函数不认识「孪生」，以后别的订阅理由也这样传进来，采集器不用改。
 
     没有 endDate 的市场判断不了什么时候结束，也排除。
     """
@@ -72,16 +78,24 @@ def select_markets(markets, top_n=TOP_N, min_days_left=MIN_DAYS_LEFT, now=None):
             "tokens": tokens,
         })
     candidates.sort(key=lambda c: c["volume24hr"], reverse=True)
-    return candidates[:top_n]
+    top = [dict(c, reasons=["top volume"]) for c in candidates[:top_n]]
+    if expand is None:
+        return top
+    chosen = {c["condition_id"] for c in top}
+    extra = expand(chosen)
+    added = [dict(c, reasons=[extra[c["condition_id"]]]) for c in candidates
+             if c["condition_id"] in extra and c["condition_id"] not in chosen]   # candidates 已按成交额排好
+    return top + added[:max_extra]
 
 
 def main():
+    from pmdata.twins.watch import twin_expander  # 和采集器一样，把孪生也算进来
     markets = load_latest_markets()
-    selected = select_markets(markets)
+    selected = select_markets(markets, expand=twin_expander())
     print(f"共 {len(markets)} 个市场，选出 {len(selected)} 个：\n")
     for rank, s in enumerate(selected, 1):
         print(f"{rank:2}. [{s['market_id']}] 24h 成交 ${s['volume24hr']:,.0f}  "
-              f"到期 {s['end_date'][:10]}  {s['question']}")
+              f"到期 {s['end_date'][:10]}  {s['question']}  （{', '.join(s['reasons'])}）")
         for t in s["tokens"]:
             print(f"      {t['outcome']:<4} {t['token_id']}")
 

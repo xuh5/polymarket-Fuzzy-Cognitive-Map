@@ -19,6 +19,7 @@ from pmdata.common.kafka import envelope, make_producer
 from pmdata.common.log import setup_logging
 from pmdata.common.timeutil import now_iso
 from pmdata.ingest.select_markets import load_latest_markets, select_markets
+from pmdata.twins.watch import twin_expander
 
 log = logging.getLogger("collect_clob")
 
@@ -171,7 +172,8 @@ class Collector:
         while True:
             await asyncio.sleep(every)
             try:
-                selected = await asyncio.to_thread(lambda: select_markets(load_latest_markets()))
+                selected = await asyncio.to_thread(
+                    lambda: select_markets(load_latest_markets(), expand=twin_expander()))
             except Exception as e:   # 读 Kafka 出错就继续用旧名单
                 log.warning(f"刷新名单失败，继续用旧名单：{type(e).__name__}: {e}")
                 continue
@@ -197,7 +199,8 @@ class Collector:
         self.stats["名单刷新"] += 1
         log.info(f"刷新名单：加入 {len(added_markets)} 个市场，移出 {len(removed_markets)} 个")
         for m in added_markets:
-            log.info(f"+ {self.questions.get(m)}")
+            why = next((", ".join(s.get("reasons", [])) for s in selected if s["condition_id"] == m), "")
+            log.info(f"+ {self.questions.get(m)}（{why}）")
         for m in removed_markets:
             log.info(f"- {self.questions.get(m)}")
 
@@ -280,7 +283,7 @@ class Collector:
 
 
 async def main(duration, refresh_every):
-    selected = select_markets(load_latest_markets())
+    selected = select_markets(load_latest_markets(), expand=twin_expander())
     collector = Collector(selected)
     log.info(f"订阅 {len(selected)} 个市场，{len(collector.subscribed)} 个 token；"
              f"每 {refresh_every:.0f} 秒刷新一次名单")

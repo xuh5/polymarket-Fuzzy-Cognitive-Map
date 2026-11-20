@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { polymarketUrl, type Market } from '../api'
-import { ago, cents, endDate, pct, pointsChange, secondsAgo } from '../format'
+import { ago, cents, endDate, pct, pointsChange, secondsAgo, shortId } from '../format'
 import BookPreview, { PREVIEW_WIDTH } from './BookPreview'
 import Change from './Change'
 import Flash from './Flash'
@@ -26,6 +26,25 @@ const CLOSE_GRACE_MS = 150
 const PREVIEW_HALF_HEIGHT = 170   // 卡片大约一半高，用来让它不超出窗口上下边
 
 type Row = { m: Market; stale: boolean; pts: number | null }
+
+// 有孪生的市场：点了直接进 Related 标签。吃单就有缺口标绿，只有按中间价才有缺口标黄，不用点进去也能看到
+function RelatedChip({ m }: { m: Market }) {
+  const c = (x: number) => `+${(x * 100).toFixed(1)}¢`
+  const taker = m.twin_gap != null && m.twin_gap > 0
+  const mid = !taker && m.twin_mid_gap != null && m.twin_mid_gap > 0
+  return (
+    <Link className={`chip related-chip${taker ? ' has-gap' : mid ? ' mid-gap' : ''}`}
+      to={`/markets/${m.market_id}?tab=related`}
+      onClick={(e) => e.stopPropagation()}
+      title={taker ? 'A tied market has a price gap at the current best prices (before fees)'
+        : mid ? 'A tied market has a price gap at mid prices only: you would have to wait for your orders to fill'
+        : 'Markets in other events tied to this one by their rules'}>
+      Related {m.twins}
+      {taker && ` · ${c(m.twin_gap!)} gap`}
+      {mid && ` · ${c(m.twin_mid_gap!)} at mid`}
+    </Link>
+  )
+}
 
 export default function MarketTable({ markets }: { markets: Market[] }) {
   const [query, setQuery] = useState('')
@@ -77,7 +96,9 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
     const list = markets
-      .filter((m) => !q || m.question.toLowerCase().includes(q))
+      // 搜问题文字，或者短编号 / 市场 ID（可以带 0x、可以只输前几位）
+      .filter((m) => !q || m.question.toLowerCase().includes(q) || m.market_id.toLowerCase().startsWith(q)
+        || shortId(m.market_id).startsWith(q.replace(/^0x/, '').replace(/^#/, '')))
       .filter((m) => picked.length === 0 || picked.includes(m.topic ?? 'Other'))
       .map((m) => {
         const stale = secondsAgo(m.updated_at) > STALE_SECONDS
@@ -111,7 +132,7 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
       <div className="section-head">
         <h2>All markets</h2>
         <div className="controls">
-          <input className="search" type="search" placeholder="Search markets" value={query}
+          <input className="search" type="search" placeholder="Search markets or #ID" value={query}
             onChange={(e) => reset(setQuery)(e.target.value)} aria-label="Search markets" />
           <div className="segmented" role="tablist" aria-label="Sort by">
             {SORTS.map((s) => (
@@ -168,6 +189,11 @@ export default function MarketTable({ markets }: { markets: Market[] }) {
                     {m.outcome !== 'Yes' && <span className="chip">{m.outcome}</span>}
                     {endDate(m.end_date) && <span>Ends {endDate(m.end_date)}</span>}
                     <span>· {ago(m.updated_at)}</span>
+                    <span className="mono">#{shortId(m.market_id)}</span>
+                    {m.twins > 0 && (
+                      // 有孪生：点了直接进这个市场的 Related 标签
+                      <RelatedChip m={m} />
+                    )}
                   </div>
                 </td>
                 <td className="num">

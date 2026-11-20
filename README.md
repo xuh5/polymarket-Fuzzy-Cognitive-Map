@@ -6,7 +6,7 @@ The goal is a public order book analytics site built on this pipeline: flag susp
 
 Everything runs on one machine with Docker Compose. Python 3.12 throughout.
 
-> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is live at [depthscope.app](https://depthscope.app) with market pages (depth chart, slippage calculator, tick-by-tick replay, trade quality, depth quality), a Signals page of detected price moves, a status page with live pipeline health and a full architecture diagram, and a short About page. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
+> **Status:** the data pipeline is done (ingestion, archive and batch models, real-time metrics, dashboard and alerts). The website is live at [depthscope.app](https://depthscope.app) with market pages (depth chart, slippage calculator, tick-by-tick replay, trade quality, depth quality, related markets in other events), a Signals page of detected price moves, a status page with live pipeline health and a full architecture diagram, and a short About page. See the [plan](polymarket-orderbook-platform.md) (in Chinese).
 
 ## Architecture
 
@@ -31,11 +31,11 @@ Everything runs on one machine with Docker Compose. Python 3.12 throughout.
                                                                  web (React, TypeScript) on Cloudflare Workers
 ```
 
-Two more services read `pm.raw.clob` the same way: `depth` writes `pm.metrics.depth` and `execution` writes `pm.metrics.execution`; pg-sink stores both in Postgres.
+Two more services read `pm.raw.clob` the same way: `depth` writes `pm.metrics.depth` and `execution` writes `pm.metrics.execution`; pg-sink stores both in Postgres. A `twins` service reads `pm.raw.markets` hourly and writes market-to-market relations to the compacted topic `pm.twins`; pg-sink stores them, and the collector reads them to also subscribe to the twins of the markets it follows.
 
 | Layer | What it does | Code |
 |---|---|---|
-| Ingestion | Pulls the market catalog every hour; streams order book snapshots, price-level changes, and trades over WebSocket; polls comments. Handles reconnects, gap markers, and dynamic resubscription. | `src/pmdata/ingest/` |
+| Ingestion | Pulls the market catalog every hour; streams order book snapshots, price-level changes, and trades over WebSocket; polls comments. Handles reconnects, gap markers, and dynamic resubscription. The subscription list merges several reasons (top volume, twins of those markets), and each market records why it is followed. | `src/pmdata/ingest/` |
 | Archive (bronze) | Consumes all raw topics and writes Hive-partitioned Parquet files. Offsets are committed only after a file is fully written. | `src/pmdata/archive/` |
 | Batch models | dbt-duckdb: staging models unpack JSON and deduplicate (silver); a star schema of `dim_markets`, `dim_tokens`, `fct_trades`, and `fct_top_of_book` (gold). 80 dbt tests. | `dbt/` |
 | Order book | Pure-logic L2 order book rebuild from Kafka events. It does no I/O, so live processing and historical replay share the same code. | `src/pmdata/book/` |
@@ -44,6 +44,7 @@ Two more services read `pm.raw.clob` the same way: `depth` writes `pm.metrics.de
 | Signals | Detects sudden price moves: the first outcome's mid moves ≥ 3 points against 5 minutes earlier (moves within 5 minutes merge into one). Each move records how the book moved (both sides, spread widened, spread narrowed), trades and flow during the move, volume vs. the market's usual 24h volume, and the price 5 and 30 minutes later. Written to a compacted topic as open → closed → final. The threshold is deliberately low; the website filters. Prices are only compared within one continuous stretch of order book data, so resubscribing or a long disconnect can't fake a jump. | `src/pmdata/signals/` |
 | Depth quality | Flags money that keeps appearing and vanishing near the best price. The feed only shows the total size at each price, so changes are split into inferred blocks. A price is flagged after 5 or more blocks of $1,000+ were pulled within 10 minutes with under 5% filled in the past hour, and only money placed there in the last 10 minutes counts as flagged. Pulls within 1 second of a trade are noted as extra context. This describes order behavior only: it can't show who placed the orders or why. Checked by recomputing about 24 hours from the raw archive: all 42,620 market-minutes matched the live output exactly. | `src/pmdata/depth/` |
 | Trade quality | For every taker order: the book just before it, how many price levels it ate through, how far its average price was from the mid (what the taker paid for not waiting), and the maker's side valued at the mid 1 s, 10 s, 1 min and 5 min later (markout). The exchange reports one trade message per taker order and sends the book change about 21 ms earlier, so the "book before" is taken from just before the matching book change; a sweep shows up as several levels shrinking with the same timestamp. Checked by recomputing about 2 hours from the raw archive: all 1,006 trades matched the live output in every field. | `src/pmdata/execution/` |
+| Twin markets | Finds markets in different events whose rules tie their results together, e.g. "market cap below $1.25T" and "above $1.25T" can't both be Yes, or a company can't be both #1 and #3 on the same leaderboard. Cheap rules first narrow ~3,000 open markets to ~650 event pairs (a shared company or person name, end dates within 12 hours, similar event titles); then an LLM reads both events' full rules and lists which result combinations are possible, and code derives the relation from that (same question, exactly one Yes, can't both be Yes, one implies the other). The prompt checks for rule differences that break a relation: data source, leaderboard settings, a fixed check time vs. "any time before", which side an exact boundary goes to, exclusions, and facts outside the rules. Runs hourly through `claude -p` (Haiku) and only re-judges pairs whose markets, rules or prompt changed; results go to Kafka like every other stream service. On two real pairs it matched a hand check on all 165 relations. The subscription list is built from "reasons" (the top 30 by volume, plus up to 40 twins of those), so both sides of a twin have a live order book; the market page shows each live twin and the cost of the cheapest combination that always pays at least $1. | `src/pmdata/twins/` |
 | Website | FastAPI backend reads the live order book from Redis, metrics and signals from Postgres, and replays from bronze; it never touches Kafka or DuckDB. The React + TypeScript front end polls it every few seconds: market list, market page with depth chart, slippage calculator, replay, trade quality and depth quality, Signals page with shareable filters (each move links to its replay), and the status page. Public access: the API goes out through a Cloudflare Tunnel (no open ports at home, rate-limited at Cloudflare, CORS limited to the site); the front end is static assets on Cloudflare Workers, rebuilt on every push. | `src/pmdata/api/`, `web/` |
 | Serving and alerting | Idempotent upsert into Postgres; Grafana dashboard and alert rules provisioned from files. Alerts (pipeline stalled, market catalog stale) and failed Airflow tasks are sent to Discord. | `src/pmdata/sink/`, `grafana/` |
 | Pipeline health | Every minute, records each consumer group's lag (committed offset vs. end offset, per partition) into Postgres; throughput is derived from the same offsets. Collector reconnects and their downtime are rebuilt from the gap markers in the raw stream. Per-minute p50/p99 latency is kept for each hop (exchange → received → computed → stored). Since the feed has no sequence numbers, missed messages are detected indirectly: the service keeps its own order book and counts how often its best bid/ask disagrees with the values the exchange attaches to each update; it also counts out-of-order exchange timestamps. | `src/pmdata/health/` |
@@ -85,7 +86,8 @@ python scripts/create_topics.py
 
 # 2. Create a .env file with POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD, and for Airflow
 #    AIRFLOW_DB_PASSWORD, AIRFLOW_ADMIN_PASSWORD, AIRFLOW_FERNET_KEY, AIRFLOW_JWT_SECRET
-#    and DISCORD_WEBHOOK_URL for alerts
+#    and DISCORD_WEBHOOK_URL for alerts; CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) for the twins service
+#    The twins service has its own image: DOCKER_BUILDKIT=0 docker build -f twins/Dockerfile -t polymarket-twins .
 
 # 3. Start all services. Airflow keeps its metadata in the same Postgres, so create its database first
 docker compose up -d postgres
@@ -109,7 +111,7 @@ Locally, the website dev server runs at `localhost:5173` (API docs at `localhost
 
 ## Tech stack
 
-Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · Airflow 3 · PostgreSQL 17 · Redis · Grafana 12 · FastAPI · React / TypeScript / Vite · Cloudflare Tunnel / Workers · Docker Compose · pytest · ruff
+Kafka (Confluent 7.9, KRaft) · confluent-kafka-python · websockets · PyArrow / Parquet · DuckDB · dbt-duckdb · Airflow 3 · PostgreSQL 17 · Redis · Grafana 12 · FastAPI · React / TypeScript / Vite · Cloudflare Tunnel / Workers · Claude Code (`claude -p`) · Docker Compose · pytest · ruff
 
 ## Roadmap
 
